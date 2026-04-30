@@ -24,6 +24,14 @@ Main Features
 - Keep clean Addons and Keys output folders
 - Save build logs automatically
 
+
+![Main Window](screenshots/RaG PBO Builder.png)
+
+![Settings Window](screenshots/RaG PBO Builder2.png)
+
+![Successful Build](screenshots/RaG PBO Builder3.png)
+
+
 ------------------------------------------------------------
 Output Structure
 ------------------------------------------------------------
