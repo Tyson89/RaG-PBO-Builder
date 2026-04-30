@@ -1,0 +1,24 @@
+RaG PBO Builder License
+
+Copyright (c) 2026 RaG Tyson
+
+Freeware - Proprietary / All Rights Reserved
+
+This software is freeware.
+You may use it free of charge for personal and authorized DayZ modding purposes.
+
+All rights reserved.
+
+You may not sell, rent, sublicense, reupload, redistribute, modify, decompile,
+reverse engineer, publish, or include this software or its source code in another
+project without written permission from the author.
+
+This software is provided "as is", without warranty of any kind, express or implied.
+
+The author is not responsible for damaged files, lost data, invalid PBOs, failed
+builds, server issues, broken signatures, leaked keys, or any other damage caused
+by the use or misuse of this software.
+
+Important:
+Never share your .biprivatekey.
+Only distribute the matching .bikey.
