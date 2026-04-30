@@ -507,33 +507,259 @@ def normalize_working_dir(project_root):
     return value
 
 
+
+def read_steam_registry_paths():
+    paths = []
+
+    if os.name != "nt":
+        return paths
+
+    try:
+        import winreg
+    except Exception:
+        return paths
+
+    registry_locations = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamExe"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+    ]
+
+    for root_key, sub_key, value_name in registry_locations:
+        try:
+            with winreg.OpenKey(root_key, sub_key) as key:
+                value, value_type = winreg.QueryValueEx(key, value_name)
+        except OSError:
+            continue
+
+        if not value:
+            continue
+
+        path = Path(str(value).replace("/", os.sep))
+
+        # SteamExe points to steam.exe, SteamPath / InstallPath point to the Steam folder.
+        if path.suffix.lower() == ".exe":
+            path = path.parent
+
+        if path.is_dir():
+            paths.append(path)
+
+    return paths
+
+
+def parse_steam_vdf_quoted_values(line):
+    # Supports basic Steam VDF lines like:
+    # "path" "D:\\SteamLibrary"
+    # "1"    "D:\\SteamLibrary"
+    return re.findall(r'"([^"]*)"', line)
+
+
+def read_steam_library_paths():
+    steam_roots = []
+
+    # Environment variable support for users with custom setups.
+    for env_name in ["STEAM_DIR", "STEAM_PATH"]:
+        env_value = os.environ.get(env_name)
+        if env_value and Path(env_value).is_dir():
+            steam_roots.append(Path(env_value))
+
+    steam_roots.extend(read_steam_registry_paths())
+
+    # Last-resort common Steam locations. These are only checked if they exist.
+    steam_roots.extend([
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam",
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam",
+    ])
+
+    library_paths = []
+    seen = set()
+
+    def add_library(path):
+        normalized = Path(str(path).replace("\\\\", "\\")).expanduser()
+        try:
+            normalized = normalized.resolve()
+        except Exception:
+            normalized = Path(os.path.normpath(str(normalized)))
+
+        key = str(normalized).lower()
+        if key not in seen and normalized.is_dir():
+            seen.add(key)
+            library_paths.append(normalized)
+
+    for steam_root in steam_roots:
+        add_library(steam_root)
+
+        libraryfolders = steam_root / "steamapps" / "libraryfolders.vdf"
+        if not libraryfolders.is_file():
+            continue
+
+        try:
+            lines = libraryfolders.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+
+        for line in lines:
+            values = parse_steam_vdf_quoted_values(line)
+            if len(values) < 2:
+                continue
+
+            key = values[0].lower()
+            value = values[1]
+
+            # New format:
+            # "path" "D:\\SteamLibrary"
+            if key == "path":
+                add_library(value)
+                continue
+
+            # Old format:
+            # "1" "D:\\SteamLibrary"
+            if key.isdigit() and value:
+                add_library(value)
+
+    return library_paths
+
+
+def get_steam_common_paths():
+    common_paths = []
+
+    for library_path in read_steam_library_paths():
+        common_path = library_path / "steamapps" / "common"
+        if common_path.is_dir():
+            common_paths.append(common_path)
+
+    return common_paths
+
+
+def read_steam_app_install_dir_from_manifest(library_path, appid):
+    manifest = library_path / "steamapps" / f"appmanifest_{appid}.acf"
+
+    if not manifest.is_file():
+        return ""
+
+    try:
+        content = manifest.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+    match = re.search(r'"installdir"\s+"([^"]+)"', content, re.IGNORECASE)
+    if not match:
+        return ""
+
+    install_dir = match.group(1).strip()
+    if not install_dir:
+        return ""
+
+    app_path = library_path / "steamapps" / "common" / install_dir
+    return str(app_path) if app_path.is_dir() else ""
+
+
+def find_steam_app_install_dir(appid, fallback_folder_names=None):
+    fallback_folder_names = fallback_folder_names or []
+
+    for library_path in read_steam_library_paths():
+        app_path = read_steam_app_install_dir_from_manifest(library_path, appid)
+        if app_path:
+            return app_path
+
+    for common_path in get_steam_common_paths():
+        for folder_name in fallback_folder_names:
+            candidate = common_path / folder_name
+            if candidate.is_dir():
+                return str(candidate)
+
+    return ""
+
+
+def find_dayz_tools_root():
+    # DayZ Tools is normally installed as:
+    # <SteamLibrary>\steamapps\common\DayZ Tools
+    # Steam libraryfolders.vdf support allows installs on D:, E:, external drives, etc.
+    return find_steam_app_install_dir("223350", ["DayZ Tools"])
+
+
+def find_dayz_install_dir():
+    # Useful for future features or diagnostics. DayZ game appid is 221100.
+    return find_steam_app_install_dir("221100", ["DayZ"])
+
+
+def find_exe_in_dayz_tools(relative_paths):
+    dayz_tools_root = find_dayz_tools_root()
+
+    if dayz_tools_root:
+        for relative_path in relative_paths:
+            candidate = Path(dayz_tools_root) / relative_path
+            if candidate.is_file():
+                return str(candidate)
+
+    # Fallback: scan all Steam common folders directly in case the manifest is missing.
+    for common_path in get_steam_common_paths():
+        tools_root = common_path / "DayZ Tools"
+        if not tools_root.is_dir():
+            continue
+
+        for relative_path in relative_paths:
+            candidate = tools_root / relative_path
+            if candidate.is_file():
+                return str(candidate)
+
+    return ""
+
+
 def find_dayz_binarize():
+    found = find_exe_in_dayz_tools([
+        Path("Bin") / "Binarize" / "binarize.exe",
+    ])
+
+    if found:
+        return found
+
     possible_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe",
         Path("C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe"),
         Path("C:/Program Files/Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe"),
     ]
+
     for path in possible_paths:
         if path.is_file():
             return str(path)
+
     return ""
 
 
 def find_cfgconvert():
+    found = find_exe_in_dayz_tools([
+        Path("Bin") / "CfgConvert" / "CfgConvert.exe",
+    ])
+
+    if found:
+        return found
+
     possible_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe",
         Path("C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"),
         Path("C:/Program Files/Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"),
     ]
+
     for path in possible_paths:
         if path.is_file():
             return str(path)
+
     return ""
 
 
 def find_dssignfile():
+    found = find_exe_in_dayz_tools([
+        Path("Bin") / "DSUtils" / "DSSignFile.exe",
+        Path("Bin") / "DSSignFile" / "DSSignFile.exe",
+    ])
+
+    if found:
+        return found
+
     possible_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/DSUtils/DSSignFile.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/DSUtils/DSSignFile.exe",
@@ -542,9 +768,11 @@ def find_dssignfile():
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/DSSignFile/DSSignFile.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/DSSignFile/DSSignFile.exe",
     ]
+
     for path in possible_paths:
         if path.is_file():
             return str(path)
+
     return ""
 
 
