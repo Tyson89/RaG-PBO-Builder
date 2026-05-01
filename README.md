@@ -25,11 +25,11 @@ Main Features
 - Save build logs automatically
 
 
-![Main Window](screenshots/RaG PBO Builder.png)
+![Main Window](screenshots/RaG_PBO_Builder.png)
 
-![Settings Window](screenshots/RaG PBO Builder2.png)
+![Settings Window](screenshots/RaG_PBO_Builder2.png)
 
-![Successful Build](screenshots/RaG PBO Builder3.png)
+![Successful Build](screenshots/RaG_PBO_Builder3.png)
 
 
 ------------------------------------------------------------
