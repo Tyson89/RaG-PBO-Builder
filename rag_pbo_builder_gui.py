@@ -69,7 +69,7 @@ Only distribute the matching .bikey.
 APP_ICON_FILE = "HEADONLY_SQUARE_2k.ico"
 
 EXCLUDE_DIRS = {".git", ".svn", ".vscode", ".idea", "__pycache__"}
-EXCLUDE_FILES = {".gitignore", ".gitattributes", "thumbs.db", "desktop.ini", ".ds_store", "$prefix$"}
+EXCLUDE_FILES = {".gitignore", ".gitattributes", "thumbs.db", "desktop.ini", ".ds_store", "$prefix$", "$pboprefix$", "$prefix$.txt", "$pboprefix$.txt"}
 EXCLUDE_EXTENSIONS = {".delete"}
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
@@ -90,6 +90,16 @@ GRAPHITE_ERROR = "#ff7070"
 ZERO = bytes([0])
 WIN_SEP = chr(92)
 COPY_CHUNK_SIZE = 1024 * 1024
+
+TEMP_MARKER_FILE = ".rag_pbo_builder_temp"
+BUILDER_TEMP_CHILDREN = {
+    "addons",
+    "preflight",
+    "staging",
+    "binarized",
+    "configs",
+    "_binarize_textures",
+}
 
 
 class BuildError(Exception):
@@ -335,7 +345,57 @@ def source_file_should_be_staged(filename, extra_patterns=None):
     return not should_skip_file(filename, extra_patterns)
 
 
-def files_are_same_for_staging(source_file, target_file):
+def file_sha1(file_path):
+    digest = hashlib.sha1()
+
+    with open(file_path, "rb") as file:
+        while True:
+            chunk = file.read(COPY_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def files_have_same_content(source_file, target_file):
+    try:
+        with open(source_file, "rb") as src, open(target_file, "rb") as dst:
+            while True:
+                src_chunk = src.read(COPY_CHUNK_SIZE)
+                dst_chunk = dst.read(COPY_CHUNK_SIZE)
+
+                if src_chunk != dst_chunk:
+                    return False
+
+                if not src_chunk:
+                    return True
+    except OSError:
+        return False
+
+
+def file_fingerprint(file_path, include_content=False):
+    if not file_path or not os.path.isfile(file_path):
+        return {"path": file_path or "", "exists": False}
+
+    try:
+        stat = os.stat(file_path)
+        info = {
+            "path": os.path.abspath(file_path),
+            "exists": True,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+
+        if include_content:
+            info["sha1"] = file_sha1(file_path)
+
+        return info
+    except OSError:
+        return {"path": file_path or "", "exists": False}
+
+
+def files_are_same_for_staging(source_file, target_file, content_safe=False):
     if not os.path.isfile(target_file):
         return False
 
@@ -349,7 +409,10 @@ def files_are_same_for_staging(source_file, target_file):
     if source_stat.st_size != target_stat.st_size:
         return False
 
-    # If source is newer, update staging.
+    if content_safe:
+        return files_have_same_content(source_file, target_file)
+
+    # Fast mode: if source is newer, update staging.
     # If target is newer or same age and same size, keep it.
     if source_stat.st_mtime_ns > target_stat.st_mtime_ns:
         return False
@@ -357,7 +420,7 @@ def files_are_same_for_staging(source_file, target_file):
     return True
 
 
-def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=None):
+def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=None, content_safe=False):
     source_dir = os.path.normpath(source_dir)
     staging_dir = os.path.normpath(staging_dir)
 
@@ -383,7 +446,7 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
 
             target_file = os.path.join(staging_dir, rel_path)
 
-            if files_are_same_for_staging(source_file, target_file):
+            if files_are_same_for_staging(source_file, target_file, content_safe):
                 unchanged += 1
                 continue
 
@@ -420,7 +483,7 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
     if log:
         log(
             "Incremental staging: "
-            f"copied={copied}, updated={updated}, unchanged={unchanged}, removed={removed}"
+            f"copied={copied}, updated={updated}, unchanged={unchanged}, removed={removed}, content_safe={content_safe}"
         )
 
 def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=None):
@@ -507,259 +570,33 @@ def normalize_working_dir(project_root):
     return value
 
 
-
-def read_steam_registry_paths():
-    paths = []
-
-    if os.name != "nt":
-        return paths
-
-    try:
-        import winreg
-    except Exception:
-        return paths
-
-    registry_locations = [
-        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
-        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamExe"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
-    ]
-
-    for root_key, sub_key, value_name in registry_locations:
-        try:
-            with winreg.OpenKey(root_key, sub_key) as key:
-                value, value_type = winreg.QueryValueEx(key, value_name)
-        except OSError:
-            continue
-
-        if not value:
-            continue
-
-        path = Path(str(value).replace("/", os.sep))
-
-        # SteamExe points to steam.exe, SteamPath / InstallPath point to the Steam folder.
-        if path.suffix.lower() == ".exe":
-            path = path.parent
-
-        if path.is_dir():
-            paths.append(path)
-
-    return paths
-
-
-def parse_steam_vdf_quoted_values(line):
-    # Supports basic Steam VDF lines like:
-    # "path" "D:\\SteamLibrary"
-    # "1"    "D:\\SteamLibrary"
-    return re.findall(r'"([^"]*)"', line)
-
-
-def read_steam_library_paths():
-    steam_roots = []
-
-    # Environment variable support for users with custom setups.
-    for env_name in ["STEAM_DIR", "STEAM_PATH"]:
-        env_value = os.environ.get(env_name)
-        if env_value and Path(env_value).is_dir():
-            steam_roots.append(Path(env_value))
-
-    steam_roots.extend(read_steam_registry_paths())
-
-    # Last-resort common Steam locations. These are only checked if they exist.
-    steam_roots.extend([
-        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam",
-        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam",
-    ])
-
-    library_paths = []
-    seen = set()
-
-    def add_library(path):
-        normalized = Path(str(path).replace("\\\\", "\\")).expanduser()
-        try:
-            normalized = normalized.resolve()
-        except Exception:
-            normalized = Path(os.path.normpath(str(normalized)))
-
-        key = str(normalized).lower()
-        if key not in seen and normalized.is_dir():
-            seen.add(key)
-            library_paths.append(normalized)
-
-    for steam_root in steam_roots:
-        add_library(steam_root)
-
-        libraryfolders = steam_root / "steamapps" / "libraryfolders.vdf"
-        if not libraryfolders.is_file():
-            continue
-
-        try:
-            lines = libraryfolders.read_text(encoding="utf-8", errors="ignore").splitlines()
-        except Exception:
-            continue
-
-        for line in lines:
-            values = parse_steam_vdf_quoted_values(line)
-            if len(values) < 2:
-                continue
-
-            key = values[0].lower()
-            value = values[1]
-
-            # New format:
-            # "path" "D:\\SteamLibrary"
-            if key == "path":
-                add_library(value)
-                continue
-
-            # Old format:
-            # "1" "D:\\SteamLibrary"
-            if key.isdigit() and value:
-                add_library(value)
-
-    return library_paths
-
-
-def get_steam_common_paths():
-    common_paths = []
-
-    for library_path in read_steam_library_paths():
-        common_path = library_path / "steamapps" / "common"
-        if common_path.is_dir():
-            common_paths.append(common_path)
-
-    return common_paths
-
-
-def read_steam_app_install_dir_from_manifest(library_path, appid):
-    manifest = library_path / "steamapps" / f"appmanifest_{appid}.acf"
-
-    if not manifest.is_file():
-        return ""
-
-    try:
-        content = manifest.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return ""
-
-    match = re.search(r'"installdir"\s+"([^"]+)"', content, re.IGNORECASE)
-    if not match:
-        return ""
-
-    install_dir = match.group(1).strip()
-    if not install_dir:
-        return ""
-
-    app_path = library_path / "steamapps" / "common" / install_dir
-    return str(app_path) if app_path.is_dir() else ""
-
-
-def find_steam_app_install_dir(appid, fallback_folder_names=None):
-    fallback_folder_names = fallback_folder_names or []
-
-    for library_path in read_steam_library_paths():
-        app_path = read_steam_app_install_dir_from_manifest(library_path, appid)
-        if app_path:
-            return app_path
-
-    for common_path in get_steam_common_paths():
-        for folder_name in fallback_folder_names:
-            candidate = common_path / folder_name
-            if candidate.is_dir():
-                return str(candidate)
-
-    return ""
-
-
-def find_dayz_tools_root():
-    # DayZ Tools is normally installed as:
-    # <SteamLibrary>\steamapps\common\DayZ Tools
-    # Steam libraryfolders.vdf support allows installs on D:, E:, external drives, etc.
-    return find_steam_app_install_dir("223350", ["DayZ Tools"])
-
-
-def find_dayz_install_dir():
-    # Useful for future features or diagnostics. DayZ game appid is 221100.
-    return find_steam_app_install_dir("221100", ["DayZ"])
-
-
-def find_exe_in_dayz_tools(relative_paths):
-    dayz_tools_root = find_dayz_tools_root()
-
-    if dayz_tools_root:
-        for relative_path in relative_paths:
-            candidate = Path(dayz_tools_root) / relative_path
-            if candidate.is_file():
-                return str(candidate)
-
-    # Fallback: scan all Steam common folders directly in case the manifest is missing.
-    for common_path in get_steam_common_paths():
-        tools_root = common_path / "DayZ Tools"
-        if not tools_root.is_dir():
-            continue
-
-        for relative_path in relative_paths:
-            candidate = tools_root / relative_path
-            if candidate.is_file():
-                return str(candidate)
-
-    return ""
-
-
 def find_dayz_binarize():
-    found = find_exe_in_dayz_tools([
-        Path("Bin") / "Binarize" / "binarize.exe",
-    ])
-
-    if found:
-        return found
-
     possible_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe",
         Path("C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe"),
         Path("C:/Program Files/Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe"),
     ]
-
     for path in possible_paths:
         if path.is_file():
             return str(path)
-
     return ""
 
 
 def find_cfgconvert():
-    found = find_exe_in_dayz_tools([
-        Path("Bin") / "CfgConvert" / "CfgConvert.exe",
-    ])
-
-    if found:
-        return found
-
     possible_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe",
         Path("C:/Program Files (x86)/Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"),
         Path("C:/Program Files/Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"),
     ]
-
     for path in possible_paths:
         if path.is_file():
             return str(path)
-
     return ""
 
 
 def find_dssignfile():
-    found = find_exe_in_dayz_tools([
-        Path("Bin") / "DSUtils" / "DSSignFile.exe",
-        Path("Bin") / "DSSignFile" / "DSSignFile.exe",
-    ])
-
-    if found:
-        return found
-
     possible_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/DSUtils/DSSignFile.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/DSUtils/DSSignFile.exe",
@@ -768,11 +605,9 @@ def find_dssignfile():
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/DayZ Tools/Bin/DSSignFile/DSSignFile.exe",
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Steam/steamapps/common/DayZ Tools/Bin/DSSignFile/DSSignFile.exe",
     ]
-
     for path in possible_paths:
         if path.is_file():
             return str(path)
-
     return ""
 
 
@@ -872,57 +707,119 @@ def run_dssignfile(dssignfile_exe, private_key, pbo_path, log):
     if not os.path.isfile(pbo_path):
         raise BuildError(f"PBO does not exist and cannot be signed: {pbo_path}")
 
-    remove_old_signatures(pbo_path, log)
     original_pbo_dir = os.path.dirname(os.path.abspath(pbo_path))
     pbo_name = os.path.basename(pbo_path)
     key_name = os.path.basename(private_key)
-    signing_root = get_app_data_dir() / "signing_temp"
-    if signing_root.exists():
-        shutil.rmtree(signing_root)
-    signing_root.mkdir(parents=True, exist_ok=True)
+    signing_root = get_app_data_dir() / "signing_temp" / f"sign_{os.getpid()}_{time.time_ns()}"
     work_pbo = signing_root / pbo_name
     work_key = signing_root / key_name
-    shutil.copy2(pbo_path, work_pbo)
-    shutil.copy2(private_key, work_key)
-    cmd = [dssignfile_exe, key_name, pbo_name]
 
-    log("")
-    log("Signing PBO in clean temp folder:")
-    log(f"  Original PBO: {pbo_path}")
-    log(f"  Work folder:  {signing_root}")
-    log(f"  Tool:         {dssignfile_exe}")
-    log("")
+    try:
+        signing_root.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pbo_path, work_pbo)
+        shutil.copy2(private_key, work_key)
+        remove_old_signatures(str(work_pbo), log)
 
-    result = subprocess.run(
-        cmd,
-        cwd=str(signing_root),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        creationflags=get_subprocess_creationflags(),
-        startupinfo=get_hidden_startupinfo(),
-    )
-    if result.stdout:
-        for line in result.stdout.splitlines():
-            log(line)
-    else:
-        log("DSSignFile returned no output.")
+        cmd = [dssignfile_exe, key_name, pbo_name]
 
-    work_signatures = glob.glob(str(work_pbo) + ".*.bisign")
-    work_signatures.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-    if result.returncode != 0:
-        raise BuildError(f"DSSignFile failed with exit code {result.returncode}: {pbo_path}")
-    if not work_signatures:
-        raise BuildError(f"DSSignFile finished but no .bisign was created for: {pbo_path}")
-    work_signature = work_signatures[0]
-    final_signature = os.path.join(original_pbo_dir, os.path.basename(work_signature))
-    shutil.copy2(work_signature, final_signature)
-    if not os.path.isfile(final_signature):
-        raise BuildError(f"Could not copy signature back to output folder: {final_signature}")
-    log(f"Created signature: {final_signature}")
+        log("")
+        log("Signing PBO in isolated temp folder:")
+        log(f"  PBO:         {pbo_name}")
+        log(f"  Key:         {key_name}")
+        log(f"  Work folder: {signing_root}")
+        log(f"  Tool:        {dssignfile_exe}")
+        log("")
+
+        result = subprocess.run(
+            cmd,
+            cwd=str(signing_root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=get_subprocess_creationflags(),
+            startupinfo=get_hidden_startupinfo(),
+        )
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                log(line)
+        else:
+            log("DSSignFile returned no output.")
+
+        work_signatures = glob.glob(str(work_pbo) + ".*.bisign")
+        work_signatures.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        if result.returncode != 0:
+            raise BuildError(f"DSSignFile failed with exit code {result.returncode}: {pbo_path}")
+        if not work_signatures:
+            raise BuildError(f"DSSignFile finished but no .bisign was created for: {pbo_path}")
+
+        for work_signature in work_signatures:
+            final_signature = os.path.join(original_pbo_dir, os.path.basename(work_signature))
+            shutil.copy2(work_signature, final_signature)
+            if not os.path.isfile(final_signature):
+                raise BuildError(f"Could not copy signature back to output folder: {final_signature}")
+            log(f"Created signature: {final_signature}")
+
+    finally:
+        # The private key is copied into signing_root because DSSignFile is most reliable
+        # when the key and PBO are in the same working folder. Always remove that copy.
+        try:
+            shutil.rmtree(signing_root, ignore_errors=True)
+        except Exception as e:
+            log(f"WARNING: Could not clean signing temp folder: {signing_root} ({e})")
 
 
-def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log):
+def create_output_work_dir(output_pbo, addon_name):
+    output_dir = os.path.dirname(os.path.abspath(output_pbo))
+    work_root = os.path.join(output_dir, "_rag_build_tmp")
+    work_dir = os.path.join(work_root, f"{get_safe_temp_name(addon_name)}_{os.getpid()}_{time.time_ns()}")
+    os.makedirs(work_dir, exist_ok=True)
+    return work_dir
+
+
+def replace_output_artifacts(temp_pbo, final_pbo, sign_pbos, log):
+    if not os.path.isfile(temp_pbo):
+        raise BuildError(f"Temporary PBO does not exist and cannot replace output: {temp_pbo}")
+
+    final_dir = os.path.dirname(os.path.abspath(final_pbo))
+    os.makedirs(final_dir, exist_ok=True)
+
+    temp_signatures = glob.glob(get_signature_pattern_for_pbo(temp_pbo))
+    if sign_pbos and not temp_signatures:
+        raise BuildError(f"Signed build expected a .bisign but none was created for: {temp_pbo}")
+
+    log("Replacing output artifacts after successful build validation.")
+    os.replace(temp_pbo, final_pbo)
+    log(f"Output PBO updated: {final_pbo}")
+
+    final_signature_paths = glob.glob(get_signature_pattern_for_pbo(final_pbo))
+    new_signature_names = {os.path.basename(path) for path in temp_signatures}
+
+    for old_signature in final_signature_paths:
+        if not sign_pbos or os.path.basename(old_signature) not in new_signature_names:
+            os.remove(old_signature)
+            log(f"Removed stale signature: {old_signature}")
+
+    for temp_signature in temp_signatures:
+        final_signature = os.path.join(final_dir, os.path.basename(temp_signature))
+        shutil.copy2(temp_signature, final_signature)
+        log(f"Output signature updated: {final_signature}")
+
+
+def cleanup_output_work_dir(work_dir, log=None):
+    if not work_dir:
+        return
+
+    try:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        parent = os.path.dirname(work_dir)
+        if os.path.isdir(parent) and not os.listdir(parent):
+            os.rmdir(parent)
+    except Exception as e:
+        if log:
+            log(f"WARNING: Could not clean output work folder: {work_dir} ({e})")
+
+
+def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name=""):
     if os.path.exists(binarized_output_dir):
         shutil.rmtree(binarized_output_dir)
     os.makedirs(binarized_output_dir, exist_ok=True)
@@ -930,7 +827,7 @@ def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_ro
     project_root_arg = normalize_project_root_arg(project_root)
     working_dir = normalize_working_dir(project_root)
     binpath = str(Path(binarize_exe).parent)
-    source_name = os.path.basename(os.path.normpath(source_dir)) or "addon"
+    source_name = addon_name or os.path.basename(os.path.normpath(source_dir)) or "addon"
     texture_temp_dir = os.path.join(temp_dir, "addons", get_safe_temp_name(source_name), "textures")
     if os.path.isdir(texture_temp_dir):
         shutil.rmtree(texture_temp_dir)
@@ -1021,23 +918,165 @@ def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log):
         log(f"Removed source config.cpp from staging: {rel_config}")
 
 
-def clear_temp_folder(temp_root, log):
-    temp_root = os.path.normpath(temp_root)
+def resolve_for_safety(path_value):
+    return Path(path_value).expanduser().resolve(strict=False)
+
+
+def paths_overlap(path_a, path_b):
+    if not path_a or not path_b:
+        return False
+
+    try:
+        a = resolve_for_safety(path_a)
+        b = resolve_for_safety(path_b)
+    except Exception:
+        return False
+
+    try:
+        if a == b:
+            return True
+        a.relative_to(b)
+        return True
+    except ValueError:
+        pass
+
+    try:
+        b.relative_to(a)
+        return True
+    except ValueError:
+        return False
+
+
+def get_dangerous_temp_root_reason(temp_root, source_root="", output_root=""):
     if not temp_root:
-        raise BuildError("Temp dir is empty. Refusing to clear it.")
-    root_path = Path(temp_root)
-    if len(str(root_path)) < 5:
-        raise BuildError(f"Temp dir path is too short. Refusing to clear it: {temp_root}")
-    if root_path.exists():
-        log(f"Clearing temp folder: {temp_root}")
-        for item in root_path.iterdir():
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-    else:
-        root_path.mkdir(parents=True, exist_ok=True)
-        log(f"Created temp folder: {temp_root}")
+        return "Temp dir is empty."
+
+    try:
+        root_path = resolve_for_safety(temp_root)
+    except Exception as e:
+        return f"Could not resolve temp dir: {e}"
+
+    root_text = str(root_path)
+
+    if len(root_text) < 5:
+        return f"Temp dir path is too short: {root_text}"
+
+    if root_path.parent == root_path:
+        return f"Temp dir points to a filesystem root: {root_text}"
+
+    # Reject plain drive roots such as C:\ or P:\.
+    drive, tail = os.path.splitdrive(root_text)
+    if drive and tail in {"\\", "/"}:
+        return f"Temp dir points to a drive root: {root_text}"
+
+    important_paths = [
+        Path.home(),
+        Path.home() / "Desktop",
+        Path.home() / "Documents",
+        Path.home() / "Downloads",
+    ]
+
+    for env_name in ["ProgramFiles", "ProgramFiles(x86)", "SystemRoot", "WINDIR", "LOCALAPPDATA", "APPDATA"]:
+        env_value = os.environ.get(env_name)
+        if env_value:
+            important_paths.append(Path(env_value))
+
+    for important_path in important_paths:
+        try:
+            if root_path == resolve_for_safety(important_path):
+                return f"Temp dir points to an important folder: {root_text}"
+        except Exception:
+            pass
+
+    lower_parts = {part.lower() for part in root_path.parts}
+    risky_folder_names = {
+        "steam",
+        "steamapps",
+        "common",
+        "dayz tools",
+        "dayz",
+        "program files",
+        "program files (x86)",
+        "windows",
+    }
+
+    if lower_parts.intersection(risky_folder_names):
+        return f"Temp dir appears to be inside an important game/system folder: {root_text}"
+
+    if source_root and paths_overlap(root_path, source_root):
+        return "Temp dir overlaps with the selected Source root."
+
+    if output_root and paths_overlap(root_path, output_root):
+        return "Temp dir overlaps with the selected Output root."
+
+    return ""
+
+
+def ensure_builder_temp_root(temp_root, log=None, source_root="", output_root=""):
+    reason = get_dangerous_temp_root_reason(temp_root, source_root, output_root)
+    if reason:
+        raise BuildError(f"Unsafe temp dir. {reason}")
+
+    root_path = resolve_for_safety(temp_root)
+    root_path.mkdir(parents=True, exist_ok=True)
+
+    marker_path = root_path / TEMP_MARKER_FILE
+    if not marker_path.exists():
+        marker_path.write_text(
+            "RaG PBO Builder temp folder marker.\n"
+            "This file allows the builder to safely clean only known builder temp folders.\n",
+            encoding="utf-8",
+        )
+        if log:
+            log(f"Created temp marker: {marker_path}")
+
+    return root_path
+
+
+def clear_temp_folder(temp_root, log, source_root="", output_root=""):
+    root_path = ensure_builder_temp_root(temp_root, None, source_root, output_root)
+    marker_path = root_path / TEMP_MARKER_FILE
+
+    if not marker_path.is_file():
+        raise BuildError(
+            "Temp marker file is missing. Refusing cleanup for safety: "
+            + str(marker_path)
+        )
+
+    log(f"Safe temp cleanup: {root_path}")
+    log("Only known RaG PBO Builder temp folders will be removed.")
+
+    removed = 0
+
+    for child_name in sorted(BUILDER_TEMP_CHILDREN):
+        child_path = root_path / child_name
+
+        if not child_path.exists():
+            continue
+
+        resolved_child = resolve_for_safety(child_path)
+
+        try:
+            resolved_child.relative_to(root_path)
+        except ValueError:
+            raise BuildError(f"Refusing to delete path outside temp root: {resolved_child}")
+
+        if resolved_child == root_path:
+            raise BuildError(f"Refusing to delete temp root itself: {resolved_child}")
+
+        if child_path.is_dir():
+            shutil.rmtree(child_path)
+            removed += 1
+            log(f"Removed temp folder: {child_path}")
+        else:
+            child_path.unlink()
+            removed += 1
+            log(f"Removed temp file: {child_path}")
+
+    if removed == 0:
+        log("No known builder temp folders found to remove.")
+
+    log("Safe temp cleanup finished.")
 
 
 def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
@@ -1135,7 +1174,43 @@ def get_pbo_base_name(folder_name, pbo_name, selected_count):
     return folder_name
 
 
-def get_pbo_prefix(pbo_base_name):
+def read_pbo_prefix_file(source_dir):
+    if not source_dir or not os.path.isdir(source_dir):
+        return ""
+
+    prefix_names = {"$pboprefix$", "$prefix$", "$pboprefix$.txt", "$prefix$.txt"}
+
+    try:
+        entries = os.listdir(source_dir)
+    except OSError:
+        return ""
+
+    for entry in entries:
+        if entry.lower() not in prefix_names:
+            continue
+
+        prefix_path = os.path.join(source_dir, entry)
+        if not os.path.isfile(prefix_path):
+            continue
+
+        try:
+            with open(prefix_path, "r", encoding="utf-8-sig", errors="ignore") as file:
+                for line in file:
+                    prefix = line.strip().strip('"').strip("'")
+                    if prefix:
+                        return prefix.replace("/", WIN_SEP).strip(WIN_SEP + "/")
+        except OSError:
+            return ""
+
+    return ""
+
+
+def get_pbo_prefix(pbo_base_name, source_dir=None):
+    file_prefix = read_pbo_prefix_file(source_dir) if source_dir else ""
+
+    if file_prefix:
+        return file_prefix
+
     return pbo_base_name
 
 
@@ -1182,6 +1257,7 @@ def detect_addon_targets(source_root, output_addons_dir):
 
 def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
     digest = hashlib.sha1()
+    content_safe_cache = bool(settings.get("force_rebuild", False))
     tracked_settings = {
         "prefix": prefix,
         "pbo_name": settings.get("pbo_name", ""),
@@ -1191,13 +1267,19 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
         "project_root": settings["project_root"],
         "exclude_patterns": settings["exclude_patterns"],
         "max_processes": settings["max_processes"],
+        "content_safe_cache": content_safe_cache,
+        "binarize_exe": file_fingerprint(settings.get("binarize_exe", ""), content_safe_cache),
+        "cfgconvert_exe": file_fingerprint(settings.get("cfgconvert_exe", ""), content_safe_cache),
+        "dssignfile_exe": file_fingerprint(settings.get("dssignfile_exe", ""), content_safe_cache),
     }
     private_key = settings.get("private_key", "")
     if settings.get("sign_pbos") and os.path.isfile(private_key):
         try:
-            tracked_settings["private_key"] = private_key
+            tracked_settings["private_key_name"] = os.path.basename(private_key)
             tracked_settings["private_key_size"] = os.path.getsize(private_key)
             tracked_settings["private_key_mtime_ns"] = os.stat(private_key).st_mtime_ns
+            if content_safe_cache:
+                tracked_settings["private_key_sha1"] = file_sha1(private_key)
         except OSError:
             pass
     digest.update(json.dumps(tracked_settings, sort_keys=True).encode("utf-8"))
@@ -1215,6 +1297,8 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
             digest.update(rel.encode("utf-8"))
             digest.update(str(stat.st_size).encode("ascii"))
             digest.update(str(stat.st_mtime_ns).encode("ascii"))
+            if content_safe_cache:
+                digest.update(file_sha1(full).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -1388,6 +1472,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, result,
         return
     result.checked_files += 1
     rel_file = os.path.relpath(file_path, addon_source_dir).replace(os.sep, WIN_SEP)
+    ignore_case_mismatch = os.path.basename(file_path).lower() == "config.cpp"
     seen_refs = set()
     for match in REFERENCE_REGEX.finditer(content):
         reference = match.group(1).strip()
@@ -1401,8 +1486,9 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, result,
         if status == "missing":
             result.error(log, f"Missing referenced file in {rel_file}: {normalized_ref}")
         elif status.startswith("case_mismatch:"):
-            detail = status.split(":", 1)[1]
-            result.warning(log, f"Path casing mismatch in {rel_file}: {normalized_ref} ({detail})")
+            # Ignore all path casing mismatches.
+            # Missing referenced files are still reported as errors above.
+            continue
 
 
 def preflight_scan_p3d_internal_references(p3d_file, addon_source_dir, project_root, result, log):
@@ -1435,8 +1521,9 @@ def preflight_scan_p3d_internal_references(p3d_file, addon_source_dir, project_r
         if status == "missing":
             result.warning(log, f"Missing internal P3D reference in {rel_file}: {normalized_ref}")
         elif status.startswith("case_mismatch:"):
-            detail = status.split(":", 1)[1]
-            result.warning(log, f"Internal P3D path casing mismatch in {rel_file}: {normalized_ref} ({detail})")
+            # Ignore all path casing mismatches found inside P3D files.
+            # DayZ/P3D paths can be noisy here, and these warnings are not useful enough.
+            continue
     if found_refs:
         log(f"P3D internal scan checked {found_refs} reference(s): {rel_file}")
     else:
@@ -1497,7 +1584,7 @@ def build_all(settings, log, progress_callback):
         raise BuildError(f"Source root is not a directory: {source_root}")
     os.makedirs(output_addons_dir, exist_ok=True)
     os.makedirs(output_keys_dir, exist_ok=True)
-    os.makedirs(temp_root, exist_ok=True)
+    ensure_builder_temp_root(temp_root, log, source_root, output_root_dir)
 
     use_binarize = settings["use_binarize"]
     convert_config = settings["convert_config"]
@@ -1514,6 +1601,7 @@ def build_all(settings, log, progress_callback):
     selected_addons = set(settings.get("selected_addons", []))
     force_rebuild = bool(settings.get("force_rebuild", False))
     preflight_before_build = bool(settings.get("preflight_before_build", False))
+    content_safe_cache = force_rebuild
     exclude_file = ""
 
     log(f"Output root:   {output_root_dir}")
@@ -1523,6 +1611,8 @@ def build_all(settings, log, progress_callback):
         log(f"Force rebuild enabled. Only selected addon temp folders will be refreshed: {temp_root}")
     else:
         log(f"Force rebuild disabled. Keeping existing temp folder contents: {temp_root}")
+    if content_safe_cache:
+        log("Force rebuild enabled content-safe checks. File contents will be hashed for cache/staging checks.")
 
     if use_binarize:
         if not binarize_exe or not os.path.isfile(binarize_exe):
@@ -1532,7 +1622,7 @@ def build_all(settings, log, progress_callback):
         if exclude_file:
             log(f"Using generated exclude file: {exclude_file}")
         else:
-            log("No exclude file will be passed to Binarize.")
+            log("No exclude file will be passed to Binarize. Binarize uses the filtered staging folder instead.")
 
     if convert_config:
         if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
@@ -1545,7 +1635,7 @@ def build_all(settings, log, progress_callback):
         if not private_key or not os.path.isfile(private_key):
             raise BuildError("Private key not found. Select your .biprivatekey file.")
         log(f"Using DSSignFile.exe: {dssignfile_exe}")
-        log(f"Using private key: {private_key}")
+        log(f"Using private key: {os.path.basename(private_key)}")
 
     all_targets = detect_addon_targets(source_root, output_addons_dir)
     targets = [(name, path) for name, path in all_targets if name in selected_addons] if selected_addons else []
@@ -1588,7 +1678,7 @@ def build_all(settings, log, progress_callback):
         log("=" * 80)
         pbo_base_name = get_pbo_base_name(folder_name, pbo_name, len(targets))
         output_pbo = os.path.join(output_addons_dir, pbo_base_name + ".pbo")
-        prefix = get_pbo_prefix(pbo_base_name)
+        prefix = get_pbo_prefix(pbo_base_name, folder_path)
         state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclude_pattern_list)
         cache_entry = source_cache.get(folder_name, {})
         signature_exists = bool(find_new_signature_for_pbo(output_pbo))
@@ -1603,7 +1693,6 @@ def build_all(settings, log, progress_callback):
             summary["skipped"] += 1
             continue
 
-        clean_output_for_pbo(output_pbo, log)
         addon_temp_root = get_addon_temp_root(temp_root, folder_name)
         if force_rebuild:
             for temp_subfolder in ["staging", "binarized", "textures", "configs"]:
@@ -1620,22 +1709,30 @@ def build_all(settings, log, progress_callback):
         if needs_staging:
             staging_dir = os.path.join(addon_temp_root, "staging")
             log("Copying source to staging folder...")
-            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log)
+            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, content_safe_cache)
             ensure_config_cpp_files_in_staging(folder_path, staging_dir, log)
             pack_source = staging_dir
         if folder_has_p3d:
             binarized_dir = os.path.join(addon_temp_root, "binarized")
         elif use_binarize:
             log("No P3D files found. Skipping P3D binarize for this addon.")
+        output_work_dir = create_output_work_dir(output_pbo, folder_name)
+        temp_output_pbo = os.path.join(output_work_dir, os.path.basename(output_pbo))
+
+        binarize_source = staging_dir if folder_has_p3d and staging_dir else folder_path
+
         build_jobs.append({
             "folder_name": folder_name,
             "folder_path": folder_path,
             "output_pbo": output_pbo,
+            "temp_output_pbo": temp_output_pbo,
+            "output_work_dir": output_work_dir,
             "prefix": prefix,
             "pack_source": pack_source,
             "folder_has_p3d": folder_has_p3d,
             "staging_dir": staging_dir,
             "binarized_dir": binarized_dir,
+            "binarize_source": binarize_source,
             "state_hash": state_hash,
         })
 
@@ -1648,8 +1745,9 @@ def build_all(settings, log, progress_callback):
         log("=" * 80)
         try:
             if use_binarize and job["folder_has_p3d"]:
+                log("Running Binarize against filtered staging folder...")
                 run_dayz_binarize(
-                    source_dir=job["folder_path"],
+                    source_dir=job["binarize_source"],
                     binarized_output_dir=job["binarized_dir"],
                     binarize_exe=binarize_exe,
                     project_root=project_root,
@@ -1657,6 +1755,7 @@ def build_all(settings, log, progress_callback):
                     max_processes=max_processes,
                     exclude_file=exclude_file,
                     log=log,
+                    addon_name=folder_name,
                 )
                 log("Overlaying binarized files onto staging folder...")
                 overlay_tree(job["binarized_dir"], job["staging_dir"])
@@ -1668,12 +1767,17 @@ def build_all(settings, log, progress_callback):
 
             log(f"PBO name:   {os.path.basename(job['output_pbo'])}")
             log(f"PBO prefix: {job['prefix']}")
-            pack_pbo(job["pack_source"], job["output_pbo"], job["prefix"], log, exclude_pattern_list)
-            summary["built"] += 1
+            pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclude_pattern_list)
             if sign_pbos:
-                wait_for_file_ready(job["output_pbo"], log)
-                run_dssignfile(dssignfile_exe, private_key, job["output_pbo"], log)
+                wait_for_file_ready(job["temp_output_pbo"], log)
+                run_dssignfile(dssignfile_exe, private_key, job["temp_output_pbo"], log)
                 summary["signed"] += 1
+
+            replace_output_artifacts(job["temp_output_pbo"], job["output_pbo"], sign_pbos, log)
+            cleanup_output_work_dir(job["output_work_dir"], log)
+            summary["built"] += 1
+
+            if sign_pbos:
                 copied_key = copy_bikey_to_keys(private_key, output_keys_dir, log)
                 if copied_key:
                     summary["keys_copied"] += 1
@@ -2514,13 +2618,23 @@ class RaGPboBuilderApp(tk.Tk):
         if not temp_dir:
             messagebox.showerror(APP_TITLE, "Temp dir is empty.")
             return
-        confirm_message = "Clear this temp folder?" + chr(10) + chr(10) + temp_dir
+        source_root = self.source_root_var.get().strip()
+        output_root = self.output_root_var.get().strip()
+
+        confirm_message = (
+            "Safely clear RaG PBO Builder temp data?" + chr(10) + chr(10)
+            + "Temp root:" + chr(10)
+            + temp_dir + chr(10) + chr(10)
+            + "Only known builder temp folders will be removed:" + chr(10)
+            + "addons, preflight, staging, binarized, configs, _binarize_textures" + chr(10) + chr(10)
+            + "Unrelated files and folders in the temp root will be left untouched."
+        )
         confirm = messagebox.askyesno(APP_TITLE, confirm_message)
         if not confirm:
             return
         try:
-            clear_temp_folder(temp_dir, self.log)
-            messagebox.showinfo(APP_TITLE, "Temp folder cleared.")
+            clear_temp_folder(temp_dir, self.log, source_root, output_root)
+            messagebox.showinfo(APP_TITLE, "Builder temp data cleared.")
         except Exception as e:
             self.log("")
             self.log(f"ERROR: {e}")
