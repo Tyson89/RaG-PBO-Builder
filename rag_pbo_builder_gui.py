@@ -76,6 +76,39 @@ DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
 DEFAULT_EXCLUDE_PATTERNS = "*.h,*.hpp,*.png,*.cpp,*.txt,thumbs.db,*.dep,*.bak,*.log,*.pew,source,*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max"
 
+
+def get_available_logical_threads():
+    # Prefer the amount of logical CPUs actually available to this process.
+    # This can differ from total CPU threads when CPU affinity, VM/container limits,
+    # or OS-level restrictions are active.
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+
+    if callable(process_cpu_count):
+        try:
+            count = process_cpu_count()
+            if count and count > 0:
+                return count
+        except Exception:
+            pass
+
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+
+    if callable(sched_getaffinity):
+        try:
+            return max(1, len(sched_getaffinity(0)))
+        except Exception:
+            pass
+
+    return os.cpu_count() or 8
+
+
+def get_default_max_processes():
+    # Default to all logical threads available to this process.
+    # Clamp to the UI spinbox range.
+    available_threads = get_available_logical_threads()
+    return max(1, min(available_threads, 64))
+
+
 GRAPHITE_BG = "#24262b"
 GRAPHITE_CARD = "#2f3238"
 GRAPHITE_CARD_SOFT = "#383c44"
@@ -85,6 +118,8 @@ GRAPHITE_TEXT = "#f1f1f1"
 GRAPHITE_MUTED = "#b8bec8"
 GRAPHITE_ACCENT = "#a74747"
 GRAPHITE_ACCENT_DARK = "#7f3434"
+GRAPHITE_PREFLIGHT = "#4f5f72"
+GRAPHITE_PREFLIGHT_ACTIVE = "#60748b"
 GRAPHITE_ERROR = "#ff7070"
 
 ZERO = bytes([0])
@@ -331,9 +366,14 @@ def create_temp_exclude_file(temp_root, raw_patterns, log):
 def has_p3d_files(source_dir, extra_patterns=None):
     for root, dirs, files in os.walk(source_dir):
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
+
         for file in files:
+            if should_skip_file(file, extra_patterns):
+                continue
+
             if file.lower().endswith(".p3d"):
                 return True
+
     return False
 
 
@@ -358,6 +398,39 @@ def file_sha1(file_path):
     return digest.hexdigest()
 
 
+def file_sha1_cached_for_build(file_path, build_hash_cache=None):
+    # Per-build cache only.
+    # Do not persist source file hashes across runs; content-safe builds must still
+    # detect same-size/same-mtime edits between separate builds.
+    if build_hash_cache is None:
+        return file_sha1(file_path)
+
+    try:
+        stat = os.stat(file_path)
+    except OSError:
+        return file_sha1(file_path)
+
+    key = os.path.normcase(os.path.abspath(file_path))
+    cached = build_hash_cache.get(key)
+
+    if isinstance(cached, dict):
+        if (
+            cached.get("size") == stat.st_size
+            and cached.get("mtime_ns") == stat.st_mtime_ns
+            and cached.get("sha1")
+        ):
+            return cached["sha1"]
+
+    digest = file_sha1(file_path)
+    build_hash_cache[key] = {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha1": digest,
+    }
+
+    return digest
+
+
 def files_have_same_content(source_file, target_file):
     try:
         with open(source_file, "rb") as src, open(target_file, "rb") as dst:
@@ -374,7 +447,7 @@ def files_have_same_content(source_file, target_file):
         return False
 
 
-def file_fingerprint(file_path, include_content=False):
+def file_fingerprint(file_path, include_content=False, build_hash_cache=None):
     if not file_path or not os.path.isfile(file_path):
         return {"path": file_path or "", "exists": False}
 
@@ -388,7 +461,7 @@ def file_fingerprint(file_path, include_content=False):
         }
 
         if include_content:
-            info["sha1"] = file_sha1(file_path)
+            info["sha1"] = file_sha1_cached_for_build(file_path, build_hash_cache)
 
         return info
     except OSError:
@@ -489,61 +562,94 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
 def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=None):
     if not os.path.isdir(source_dir):
         log(f"WARNING: Source folder does not exist while ensuring P3Ds: {source_dir}")
-        return
+        return 0
+
     if not os.path.isdir(staging_dir):
         os.makedirs(staging_dir, exist_ok=True)
 
     copied = 0
     already_present = 0
+    skipped = 0
+
     for root, dirs, files in os.walk(source_dir):
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
+
         for file in files:
             if not file.lower().endswith(".p3d"):
                 continue
+
+            if should_skip_file(file, extra_patterns):
+                skipped += 1
+                continue
+
             source_p3d = os.path.join(root, file)
             rel_p3d = os.path.relpath(source_p3d, source_dir)
             target_p3d = os.path.join(staging_dir, rel_p3d)
+
             if os.path.isfile(target_p3d):
                 already_present += 1
                 continue
+
             os.makedirs(os.path.dirname(target_p3d), exist_ok=True)
             shutil.copy2(source_p3d, target_p3d)
             copied += 1
+
             rel_log = rel_p3d.replace(os.sep, WIN_SEP)
             log(f"Copied original P3D missing from Binarize output: {rel_log}")
 
     if copied:
         log(f"Copied {copied} original P3D file(s) that Binarize did not output.")
     else:
-        log(f"All source P3D files are already present in staging ({already_present} checked).")
+        log(f"All non-excluded source P3D files are already present in staging ({already_present} checked).")
+
+    if skipped:
+        log(f"Skipped {skipped} excluded P3D file(s) during P3D fallback check.")
+
+    return copied
 
 
-def ensure_config_cpp_files_in_staging(source_dir, staging_dir, log):
+def ensure_config_cpp_files_in_staging(source_dir, staging_dir, log, extra_patterns=None):
     if not os.path.isdir(source_dir):
         log(f"WARNING: Source folder does not exist while ensuring configs: {source_dir}")
-        return
+        return 0
+
     if not os.path.isdir(staging_dir):
         os.makedirs(staging_dir, exist_ok=True)
 
     copied = 0
+    skipped_dirs = 0
+
     for root, dirs, files in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if not should_skip_dir(d)]
+        before_count = len(dirs)
+        dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
+        skipped_dirs += before_count - len(dirs)
+
         for file in files:
             if file.lower() != "config.cpp":
                 continue
+
+            # config.cpp must always be preserved only inside included folders.
+            # Excluded folders such as "source" must not be reintroduced here.
             source_config = os.path.join(root, file)
             rel_config = os.path.relpath(source_config, source_dir)
             target_config = os.path.join(staging_dir, rel_config)
+
             os.makedirs(os.path.dirname(target_config), exist_ok=True)
             shutil.copy2(source_config, target_config)
             copied += 1
+
             rel_log = rel_config.replace(os.sep, WIN_SEP)
             log(f"Ensured config.cpp in staging: {rel_log}")
 
     if copied:
         log(f"Ensured {copied} config.cpp file(s) are present in staging.")
     else:
-        log("No config.cpp files found while ensuring configs in staging.")
+        log("No included config.cpp files found while ensuring configs in staging.")
+
+    if skipped_dirs:
+        log(f"Skipped {skipped_dirs} excluded folder(s) while ensuring config.cpp files.")
+
+    return copied
 
 
 def overlay_tree(source_dir, destination_dir):
@@ -776,6 +882,97 @@ def create_output_work_dir(output_pbo, addon_name):
     return work_dir
 
 
+def create_publish_backup_dir(final_pbo):
+    final_dir = os.path.dirname(os.path.abspath(final_pbo))
+    backup_root = os.path.join(final_dir, "_rag_build_backup")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = os.path.splitext(os.path.basename(final_pbo))[0]
+    backup_dir = os.path.join(backup_root, f"{name}_{stamp}_{os.getpid()}_{time.time_ns()}")
+    os.makedirs(backup_dir, exist_ok=True)
+    return backup_dir
+
+
+def copy_existing_output_artifacts_to_backup(final_pbo, backup_dir, log):
+    backed_up = []
+
+    if os.path.isfile(final_pbo):
+        backup_pbo = os.path.join(backup_dir, os.path.basename(final_pbo))
+        shutil.copy2(final_pbo, backup_pbo)
+        backed_up.append(backup_pbo)
+        log(f"Backed up existing PBO: {backup_pbo}")
+
+    for signature in glob.glob(get_signature_pattern_for_pbo(final_pbo)):
+        backup_signature = os.path.join(backup_dir, os.path.basename(signature))
+        shutil.copy2(signature, backup_signature)
+        backed_up.append(backup_signature)
+        log(f"Backed up existing signature: {backup_signature}")
+
+    return backed_up
+
+
+def remove_current_output_artifacts(final_pbo, log):
+    if os.path.isfile(final_pbo):
+        os.remove(final_pbo)
+        log(f"Removed partially published PBO: {final_pbo}")
+
+    for signature in glob.glob(get_signature_pattern_for_pbo(final_pbo)):
+        try:
+            os.remove(signature)
+            log(f"Removed partially published signature: {signature}")
+        except FileNotFoundError:
+            pass
+
+
+def restore_output_artifacts_from_backup(final_pbo, backup_dir, log):
+    if not backup_dir or not os.path.isdir(backup_dir):
+        return
+
+    final_dir = os.path.dirname(os.path.abspath(final_pbo))
+
+    log("Attempting to restore previous output artifacts from backup.")
+    remove_current_output_artifacts(final_pbo, log)
+
+    backup_pbo = os.path.join(backup_dir, os.path.basename(final_pbo))
+    if os.path.isfile(backup_pbo):
+        shutil.copy2(backup_pbo, final_pbo)
+        log(f"Restored previous PBO: {final_pbo}")
+
+    for backup_signature in glob.glob(os.path.join(backup_dir, os.path.basename(final_pbo) + ".*.bisign")):
+        final_signature = os.path.join(final_dir, os.path.basename(backup_signature))
+        shutil.copy2(backup_signature, final_signature)
+        log(f"Restored previous signature: {final_signature}")
+
+
+def safe_remove_empty_parent(path_value, stop_at):
+    try:
+        current = Path(path_value)
+        stop = Path(stop_at).resolve(strict=False)
+
+        while current.exists() and current.is_dir():
+            if current.resolve(strict=False) == stop:
+                break
+            if any(current.iterdir()):
+                break
+            current.rmdir()
+            current = current.parent
+    except Exception:
+        pass
+
+
+def validate_publish_backup(final_pbo, backup_dir, existing_signatures):
+    # Validate that the backup contains every existing published artifact
+    # before we touch the published output set.
+    if os.path.isfile(final_pbo):
+        backup_pbo = os.path.join(backup_dir, os.path.basename(final_pbo))
+        if not os.path.isfile(backup_pbo):
+            raise BuildError(f"Backup validation failed. Missing backup PBO: {backup_pbo}")
+
+    for signature in existing_signatures:
+        backup_signature = os.path.join(backup_dir, os.path.basename(signature))
+        if not os.path.isfile(backup_signature):
+            raise BuildError(f"Backup validation failed. Missing backup signature: {backup_signature}")
+
+
 def replace_output_artifacts(temp_pbo, final_pbo, sign_pbos, log):
     if not os.path.isfile(temp_pbo):
         raise BuildError(f"Temporary PBO does not exist and cannot replace output: {temp_pbo}")
@@ -784,25 +981,81 @@ def replace_output_artifacts(temp_pbo, final_pbo, sign_pbos, log):
     os.makedirs(final_dir, exist_ok=True)
 
     temp_signatures = glob.glob(get_signature_pattern_for_pbo(temp_pbo))
+    temp_signatures.sort(key=lambda path: os.path.basename(path).lower())
+
     if sign_pbos and not temp_signatures:
         raise BuildError(f"Signed build expected a .bisign but none was created for: {temp_pbo}")
 
-    log("Replacing output artifacts after successful build validation.")
-    os.replace(temp_pbo, final_pbo)
-    log(f"Output PBO updated: {final_pbo}")
+    publish_id = f"{os.getpid()}_{time.time_ns()}"
+    prepared_signature_paths = []
+    backup_dir = create_publish_backup_dir(final_pbo)
+    backup_root = os.path.dirname(backup_dir)
+    publish_started = False
 
-    final_signature_paths = glob.glob(get_signature_pattern_for_pbo(final_pbo))
-    new_signature_names = {os.path.basename(path) for path in temp_signatures}
+    try:
+        log("Preparing output publish set.")
+        existing_signatures = glob.glob(get_signature_pattern_for_pbo(final_pbo))
+        existing_signatures.sort(key=lambda path: os.path.basename(path).lower())
 
-    for old_signature in final_signature_paths:
-        if not sign_pbos or os.path.basename(old_signature) not in new_signature_names:
-            os.remove(old_signature)
-            log(f"Removed stale signature: {old_signature}")
+        copy_existing_output_artifacts_to_backup(final_pbo, backup_dir, log)
+        validate_publish_backup(final_pbo, backup_dir, existing_signatures)
 
-    for temp_signature in temp_signatures:
-        final_signature = os.path.join(final_dir, os.path.basename(temp_signature))
-        shutil.copy2(temp_signature, final_signature)
-        log(f"Output signature updated: {final_signature}")
+        # Copy new signatures to final-folder temp names before touching the published PBO.
+        # This catches permission, disk, and antivirus problems before the current PBO is replaced.
+        for temp_signature in temp_signatures:
+            final_signature = os.path.join(final_dir, os.path.basename(temp_signature))
+            prepared_signature = final_signature + f".new_{publish_id}"
+            shutil.copy2(temp_signature, prepared_signature)
+            prepared_signature_paths.append((prepared_signature, final_signature))
+            log(f"Prepared signature for publish: {prepared_signature}")
+
+        log("Publishing output artifacts after successful build validation.")
+
+        # From this point forward, published output may be modified and rollback may be needed.
+        publish_started = True
+        os.replace(temp_pbo, final_pbo)
+        log(f"Output PBO updated: {final_pbo}")
+
+        new_signature_names = {os.path.basename(final_signature) for _, final_signature in prepared_signature_paths}
+
+        for prepared_signature, final_signature in prepared_signature_paths:
+            os.replace(prepared_signature, final_signature)
+            log(f"Output signature updated: {final_signature}")
+
+        # Remove signatures that belonged to the previous PBO but are not part of the new publish set.
+        for old_signature in glob.glob(get_signature_pattern_for_pbo(final_pbo)):
+            if os.path.basename(old_signature) not in new_signature_names:
+                os.remove(old_signature)
+                log(f"Removed stale signature: {old_signature}")
+
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        safe_remove_empty_parent(backup_root, final_dir)
+        log("Output publish set completed successfully.")
+
+    except Exception as e:
+        log(f"ERROR: Output publish failed: {e}")
+
+        for prepared_signature, _ in prepared_signature_paths:
+            if os.path.isfile(prepared_signature):
+                try:
+                    os.remove(prepared_signature)
+                    log(f"Removed prepared signature after failed publish: {prepared_signature}")
+                except Exception as cleanup_error:
+                    log(f"WARNING: Could not remove prepared signature: {prepared_signature} ({cleanup_error})")
+
+        if publish_started:
+            try:
+                restore_output_artifacts_from_backup(final_pbo, backup_dir, log)
+                log(f"Previous output restored from backup: {backup_dir}")
+            except Exception as restore_error:
+                log(f"ERROR: Could not restore previous output from backup: {backup_dir} ({restore_error})")
+                log("Manual recovery may be required. Backup folder was kept.")
+        else:
+            log("Publish had not started yet. Existing output was left untouched.")
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            safe_remove_empty_parent(backup_root, final_dir)
+
+        raise BuildError(f"Output publish failed. Existing output was left untouched or restored if needed. Details: {e}")
 
 
 def cleanup_output_work_dir(work_dir, log=None):
@@ -871,7 +1124,7 @@ def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_ro
         raise BuildError(f"Binarize failed with exit code {result.returncode}: {source_dir}")
 
 
-def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log):
+def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log, extra_patterns=None):
     if not os.path.isdir(staging_dir):
         raise BuildError(f"Staging folder does not exist: {staging_dir}")
     if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
@@ -879,12 +1132,12 @@ def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log):
 
     config_files = []
     for root, dirs, files in os.walk(staging_dir):
-        dirs[:] = [d for d in dirs if not should_skip_dir(d)]
+        dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
             if file.lower() == "config.cpp":
                 config_files.append(os.path.join(root, file))
     if not config_files:
-        log("No config.cpp found. Skipping CPP to BIN.")
+        log("No included config.cpp found. Skipping CPP to BIN.")
         return
     config_files.sort(key=lambda path: os.path.relpath(path, staging_dir).lower())
 
@@ -1079,6 +1332,50 @@ def clear_temp_folder(temp_root, log, source_root="", output_root=""):
     log("Safe temp cleanup finished.")
 
 
+def clear_full_temp_folder(temp_root, log, source_root="", output_root=""):
+    root_path = ensure_builder_temp_root(temp_root, None, source_root, output_root)
+    marker_path = root_path / TEMP_MARKER_FILE
+
+    if not marker_path.is_file():
+        raise BuildError(
+            "Temp marker file is missing. Refusing full cleanup for safety: "
+            + str(marker_path)
+        )
+
+    log(f"Full temp cleanup: {root_path}")
+    log("All files and folders inside the temp root will be removed, except the builder marker file.")
+
+    removed = 0
+
+    for item in root_path.iterdir():
+        if item.name == TEMP_MARKER_FILE:
+            continue
+
+        resolved_item = resolve_for_safety(item)
+
+        try:
+            resolved_item.relative_to(root_path)
+        except ValueError:
+            raise BuildError(f"Refusing to delete path outside temp root: {resolved_item}")
+
+        if resolved_item == root_path:
+            raise BuildError(f"Refusing to delete temp root itself: {resolved_item}")
+
+        if item.is_dir():
+            shutil.rmtree(item)
+            removed += 1
+            log(f"Removed temp folder: {item}")
+        else:
+            item.unlink()
+            removed += 1
+            log(f"Removed temp file: {item}")
+
+    if removed == 0:
+        log("Full temp cleanup found nothing to remove.")
+
+    log("Full temp cleanup finished.")
+
+
 def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
     source_dir = os.path.normpath(source_dir)
     output_path = os.path.normpath(output_path)
@@ -1255,9 +1552,9 @@ def detect_addon_targets(source_root, output_addons_dir):
     return collect_subfolders(source_root, output_addons_dir)
 
 
-def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
+def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, build_hash_cache=None):
     digest = hashlib.sha1()
-    content_safe_cache = bool(settings.get("force_rebuild", False))
+    content_safe_cache = True
     tracked_settings = {
         "prefix": prefix,
         "pbo_name": settings.get("pbo_name", ""),
@@ -1268,9 +1565,9 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
         "exclude_patterns": settings["exclude_patterns"],
         "max_processes": settings["max_processes"],
         "content_safe_cache": content_safe_cache,
-        "binarize_exe": file_fingerprint(settings.get("binarize_exe", ""), content_safe_cache),
-        "cfgconvert_exe": file_fingerprint(settings.get("cfgconvert_exe", ""), content_safe_cache),
-        "dssignfile_exe": file_fingerprint(settings.get("dssignfile_exe", ""), content_safe_cache),
+        "binarize_exe": file_fingerprint(settings.get("binarize_exe", ""), content_safe_cache, build_hash_cache),
+        "cfgconvert_exe": file_fingerprint(settings.get("cfgconvert_exe", ""), content_safe_cache, build_hash_cache),
+        "dssignfile_exe": file_fingerprint(settings.get("dssignfile_exe", ""), content_safe_cache, build_hash_cache),
     }
     private_key = settings.get("private_key", "")
     if settings.get("sign_pbos") and os.path.isfile(private_key):
@@ -1279,7 +1576,7 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
             tracked_settings["private_key_size"] = os.path.getsize(private_key)
             tracked_settings["private_key_mtime_ns"] = os.stat(private_key).st_mtime_ns
             if content_safe_cache:
-                tracked_settings["private_key_sha1"] = file_sha1(private_key)
+                tracked_settings["private_key_sha1"] = file_sha1_cached_for_build(private_key, build_hash_cache)
         except OSError:
             pass
     digest.update(json.dumps(tracked_settings, sort_keys=True).encode("utf-8"))
@@ -1298,7 +1595,7 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None):
             digest.update(str(stat.st_size).encode("ascii"))
             digest.update(str(stat.st_mtime_ns).encode("ascii"))
             if content_safe_cache:
-                digest.update(file_sha1(full).encode("ascii"))
+                digest.update(file_sha1_cached_for_build(full, build_hash_cache).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -1601,7 +1898,7 @@ def build_all(settings, log, progress_callback):
     selected_addons = set(settings.get("selected_addons", []))
     force_rebuild = bool(settings.get("force_rebuild", False))
     preflight_before_build = bool(settings.get("preflight_before_build", False))
-    content_safe_cache = force_rebuild
+    content_safe_cache = True
     exclude_file = ""
 
     log(f"Output root:   {output_root_dir}")
@@ -1611,8 +1908,11 @@ def build_all(settings, log, progress_callback):
         log(f"Force rebuild enabled. Only selected addon temp folders will be refreshed: {temp_root}")
     else:
         log(f"Force rebuild disabled. Keeping existing temp folder contents: {temp_root}")
-    if content_safe_cache:
-        log("Force rebuild enabled content-safe checks. File contents will be hashed for cache/staging checks.")
+    log("Content-safe checks enabled internally. File contents are hashed for cache/staging checks.")
+    log("Using per-build SHA1 cache for repeated file fingerprints. Source hashes are not persisted across runs.")
+    log(f"Detected total logical CPU threads: {os.cpu_count() or 'unknown'}")
+    log(f"Detected available logical threads: {get_available_logical_threads()}")
+    log(f"Configured Binarize max processes: {max_processes}")
 
     if use_binarize:
         if not binarize_exe or not os.path.isfile(binarize_exe):
@@ -1657,6 +1957,7 @@ def build_all(settings, log, progress_callback):
         log("Force rebuild enabled. Cache will be ignored for selected addons.")
 
     cache = load_build_cache()
+    build_hash_cache = {}
     cache_key_root = os.path.abspath(source_root).lower()
     source_cache = cache.setdefault(cache_key_root, {})
     summary = {
@@ -1665,6 +1966,7 @@ def build_all(settings, log, progress_callback):
         "signed": 0,
         "failed": 0,
         "keys_copied": 0,
+        "p3d_fallbacks": 0,
         "targets": len(targets),
         "log_file": settings.get("log_file", ""),
     }
@@ -1679,7 +1981,7 @@ def build_all(settings, log, progress_callback):
         pbo_base_name = get_pbo_base_name(folder_name, pbo_name, len(targets))
         output_pbo = os.path.join(output_addons_dir, pbo_base_name + ".pbo")
         prefix = get_pbo_prefix(pbo_base_name, folder_path)
-        state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclude_pattern_list)
+        state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclude_pattern_list, build_hash_cache)
         cache_entry = source_cache.get(folder_name, {})
         signature_exists = bool(find_new_signature_for_pbo(output_pbo))
         can_skip = (
@@ -1710,7 +2012,6 @@ def build_all(settings, log, progress_callback):
             staging_dir = os.path.join(addon_temp_root, "staging")
             log("Copying source to staging folder...")
             copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, content_safe_cache)
-            ensure_config_cpp_files_in_staging(folder_path, staging_dir, log)
             pack_source = staging_dir
         if folder_has_p3d:
             binarized_dir = os.path.join(addon_temp_root, "binarized")
@@ -1759,11 +2060,19 @@ def build_all(settings, log, progress_callback):
                 )
                 log("Overlaying binarized files onto staging folder...")
                 overlay_tree(job["binarized_dir"], job["staging_dir"])
-                ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclude_pattern_list)
+                p3d_fallback_count = ensure_p3d_files_in_staging(
+                    job["folder_path"],
+                    job["staging_dir"],
+                    log,
+                    exclude_pattern_list,
+                )
+
+                if p3d_fallback_count > 0:
+                    summary["p3d_fallbacks"] += p3d_fallback_count
 
             if convert_config:
-                ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log)
-                run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log)
+                ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
+                run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
 
             log(f"PBO name:   {os.path.basename(job['output_pbo'])}")
             log(f"PBO prefix: {job['prefix']}")
@@ -1799,13 +2108,14 @@ def build_all(settings, log, progress_callback):
     log("=" * 80)
     log("Build summary")
     log("=" * 80)
-    log(f"Targets:     {summary['targets']}")
-    log(f"Built:       {summary['built']}")
-    log(f"Skipped:     {summary['skipped']}")
-    log(f"Signed:      {summary['signed']}")
-    log(f"Keys copied: {summary['keys_copied']}")
-    log(f"Failed:      {summary['failed']}")
-    log(f"Time:        {format_duration(elapsed)}")
+    log(f"Targets:       {summary['targets']}")
+    log(f"Built:         {summary['built']}")
+    log(f"Skipped:       {summary['skipped']}")
+    log(f"Signed:        {summary['signed']}")
+    log(f"Keys copied:   {summary['keys_copied']}")
+    log(f"P3D fallbacks: {summary['p3d_fallbacks']}")
+    log(f"Failed:        {summary['failed']}")
+    log(f"Time:          {format_duration(elapsed)}")
     if summary.get("log_file"):
         log(f"Log:         {summary['log_file']}")
     log("=" * 80)
@@ -1842,7 +2152,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.sign_pbos_var = tk.BooleanVar(value=self.saved_settings.get("sign_pbos", True))
         self.force_rebuild_var = tk.BooleanVar(value=self.saved_settings.get("force_rebuild", False))
         self.preflight_before_build_var = tk.BooleanVar(value=self.saved_settings.get("preflight_before_build", False))
-        self.max_processes_var = tk.IntVar(value=self.saved_settings.get("max_processes", 16))
+        self.max_processes_var = tk.IntVar(value=self.saved_settings.get("max_processes", get_default_max_processes()))
         self.binarize_exe_var = tk.StringVar(value=self.saved_settings.get("binarize_exe", find_dayz_binarize()))
         self.cfgconvert_exe_var = tk.StringVar(value=self.saved_settings.get("cfgconvert_exe", find_cfgconvert()))
         self.dssignfile_exe_var = tk.StringVar(value=self.saved_settings.get("dssignfile_exe", find_dssignfile()))
@@ -1911,9 +2221,9 @@ class RaGPboBuilderApp(tk.Tk):
             activeforeground=GRAPHITE_TEXT,
             relief="flat",
             borderwidth=0,
-            padx=14,
-            pady=7,
-            font=("Segoe UI", 10),
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9),
             cursor="hand2",
         )
         self.about_button.pack(side="right")
@@ -1929,45 +2239,101 @@ class RaGPboBuilderApp(tk.Tk):
             activeforeground=GRAPHITE_TEXT,
             relief="flat",
             borderwidth=0,
-            padx=14,
-            pady=7,
-            font=("Segoe UI", 10),
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9),
             cursor="hand2",
         )
         self.licence_button.pack(side="right", padx=(0, 8))
         add_tooltip(self.licence_button, "Show licence terms and warranty disclaimer.")
 
-        settings = ttk.LabelFrame(outer, text="Build settings", padding=18)
-        settings.pack(fill="x", pady=(0, 14))
-        self._add_folder_row(settings, 0, "Source root", self.source_root_var, self.choose_source_root, "Folder containing addon folders. If this folder itself contains config.cpp, it will be built as one addon.")
-        self._add_folder_row(settings, 1, "Output root", self.output_root_var, self.choose_output_root, "Root output folder. The builder creates Addons and Keys inside this folder automatically.")
+        self.options_button = tk.Button(
+            header,
+            text="Options",
+            command=self.open_options_window,
+            bg=GRAPHITE_CARD_SOFT,
+            fg=GRAPHITE_TEXT,
+            activebackground=GRAPHITE_BORDER,
+            activeforeground=GRAPHITE_TEXT,
+            relief="flat",
+            borderwidth=0,
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        )
+        self.options_button.pack(side="right", padx=(0, 8))
+        add_tooltip(self.options_button, "Open tool paths, temp folder, project root, private key, and exclude pattern settings.")
+
+        settings = ttk.LabelFrame(outer, text="Build settings", padding=14)
+        settings.pack(fill="x", pady=(0, 12))
+        self._add_folder_row(
+            settings,
+            0,
+            "Source root",
+            self.source_root_var,
+            self.choose_source_root,
+            "Folder containing addon folders. If this folder itself contains config.cpp, it will be built as one addon.",
+            self.open_source_root_folder,
+            "Open the selected Source root folder in Windows Explorer.",
+        )
+        self._add_folder_row(
+            settings,
+            1,
+            "Output root",
+            self.output_root_var,
+            self.choose_output_root,
+            "Root output folder. The builder creates Addons and Keys inside this folder automatically.",
+            self.open_output_folder,
+            "Open the selected Output root folder in Windows Explorer.",
+        )
         label = ttk.Label(settings, text="PBO name")
-        label.grid(row=2, column=0, sticky="w", pady=5)
+        label.grid(row=2, column=0, sticky="w", pady=4)
         add_tooltip(label, "Optional PBO filename override. Only used when exactly one addon is selected.")
         entry = ttk.Entry(settings, textvariable=self.pbo_name_var)
-        entry.grid(row=2, column=1, sticky="ew", pady=5, padx=(8, 8))
+        entry.grid(row=2, column=1, sticky="ew", pady=4, padx=(8, 8))
         add_tooltip(entry, "Leave empty to use the selected addon folder name. Only applies to single-addon builds.")
-        hint = ttk.Label(settings, text="Optional, single-addon builds only", foreground=GRAPHITE_MUTED)
-        hint.grid(row=2, column=2, sticky="w", pady=5)
+        hint_frame = ttk.Frame(settings, width=230)
+        hint_frame.grid(row=2, column=2, sticky="e", pady=4)
+        hint_frame.grid_propagate(False)
+
+        hint = ttk.Label(hint_frame, text="Optional, single-addon builds only", foreground=GRAPHITE_MUTED)
+        hint.pack(side="right", fill="x")
         add_tooltip(hint, "For multi-addon builds, each PBO always uses its addon folder name.")
+
         settings.columnconfigure(1, weight=1)
+        settings.columnconfigure(2, minsize=230)
 
         options_frame = ttk.LabelFrame(outer, text="Build options", padding=18)
         options_frame.pack(fill="x", pady=(0, 14))
-        self._add_checkbutton(options_frame, "Binarize P3D", self.use_binarize_var, 0, 0, "Run DayZ Tools binarize.exe before packing addons that contain P3D files.")
-        self._add_checkbutton(options_frame, "CPP to BIN", self.convert_config_var, 0, 1, "Convert root and nested config.cpp files to config.bin in staging before packing.")
-        self._add_checkbutton(options_frame, "Sign PBOs", self.sign_pbos_var, 0, 2, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
-        self._add_checkbutton(options_frame, "Force rebuild", self.force_rebuild_var, 0, 3, "Ignore the build cache and rebuild all selected addons.")
-        self._add_checkbutton(options_frame, "Preflight before build", self.preflight_before_build_var, 0, 4, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.")
+
+        pipeline_label = ttk.Label(options_frame, text="Build pipeline", foreground=GRAPHITE_MUTED)
+        pipeline_label.grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 14))
+        add_tooltip(pipeline_label, "Main build steps that change how addon files are processed before packing.")
+        self._add_checkbutton(options_frame, "Binarize P3D", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D files.")
+        self._add_checkbutton(options_frame, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
+        self._add_checkbutton(options_frame, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
+
+        safety_label = ttk.Label(options_frame, text="Safety", foreground=GRAPHITE_MUTED)
+        safety_label.grid(row=1, column=0, sticky="w", pady=(0, 8), padx=(0, 14))
+        add_tooltip(safety_label, "Safety and validation options. Content-safe cache checks are always enabled internally.")
+        self._add_checkbutton(options_frame, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
+        self._add_checkbutton(options_frame, "Preflight before build", self.preflight_before_build_var, 1, 2, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.")
+
+        performance_label = ttk.Label(options_frame, text="Performance", foreground=GRAPHITE_MUTED)
+        performance_label.grid(row=2, column=0, sticky="w", pady=(0, 4), padx=(0, 14))
+        add_tooltip(performance_label, "Performance tuning for external DayZ Tools processes.")
+
         max_frame = ttk.Frame(options_frame)
-        max_frame.grid(row=0, column=5, sticky="w", pady=(0, 8), padx=(8, 0))
+        max_frame.grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 4), padx=(0, 0))
         label = ttk.Label(max_frame, text="Max processes")
         label.pack(side="left")
-        add_tooltip(label, "Passed to binarize.exe as maxProcesses.")
+        add_tooltip(label, f"Passed to binarize.exe as maxProcesses. Default uses all available logical threads: {get_default_max_processes()}.")
         spinbox = ttk.Spinbox(max_frame, from_=1, to=64, textvariable=self.max_processes_var, width=8)
         spinbox.pack(side="left", padx=(8, 0))
-        add_tooltip(spinbox, "How many worker processes Binarize may use.")
-        options_frame.columnconfigure(6, weight=1)
+        add_tooltip(spinbox, "How many worker processes Binarize may use. Higher is not always faster, especially on slower CPUs or disks.")
+
+        options_frame.columnconfigure(4, weight=1)
 
         addons_frame = ttk.LabelFrame(outer, text="Addon selection", padding=18)
         addons_frame.pack(fill="both", expand=True, pady=(0, 14))
@@ -1986,7 +2352,7 @@ class RaGPboBuilderApp(tk.Tk):
             highlightbackground=GRAPHITE_BORDER,
             highlightcolor=GRAPHITE_ACCENT,
             font=("Consolas", 10),
-            height=6,
+            height=4,
             exportselection=False,
         )
         self.addon_listbox.grid(row=0, column=0, sticky="nsew")
@@ -2008,29 +2374,29 @@ class RaGPboBuilderApp(tk.Tk):
         add_tooltip(select_none_button, "Clear the addon selection.")
 
         actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(12, 0))
+        actions.pack(fill="x", pady=(8, 0))
         primary_actions = ttk.Frame(actions)
         primary_actions.pack(fill="x")
         secondary_actions = ttk.Frame(actions)
-        secondary_actions.pack(fill="x", pady=(8, 0))
-        self.build_button = self._make_action_button(primary_actions, "Build PBOs", self.start_build, primary=True, tooltip="Build the currently selected addon(s).")
-        self.preflight_button = self._make_action_button(primary_actions, "Preflight", self.start_preflight, tooltip="Check selected addon(s) for config syntax errors and missing referenced files before packing.")
-        self.options_button = self._make_action_button(primary_actions, "Options", self.open_options_window, tooltip="Open tool paths, temp folder, project root, private key, and exclude pattern settings.")
-        self.status_label = ttk.Label(primary_actions, textvariable=self.status_var, foreground=GRAPHITE_MUTED, width=32)
-        self.status_label.pack(side="left", padx=(14, 0))
+        secondary_actions.pack(fill="x", pady=(5, 0))
+        self.build_button = self._make_action_button(primary_actions, "Build PBOs", self.start_build, primary=True, large=True, tooltip="Build the currently selected addon(s).")
+        self.preflight_button = self._make_action_button(primary_actions, "Preflight", self.start_preflight, variant="preflight", large=True, tooltip="Check selected addon(s) for config syntax errors and missing referenced files before packing.")
+        self.status_label = ttk.Label(primary_actions, textvariable=self.status_var, foreground=GRAPHITE_MUTED, width=20)
+        self.status_label.pack(side="left", padx=(14, 4))
         add_tooltip(self.status_label, "Current builder status.")
         self.progress = ttk.Progressbar(primary_actions, mode="determinate")
-        self.progress.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        self.progress.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
         self.clear_button = self._make_action_button(secondary_actions, "Clear log", self.clear_log, tooltip="Clear the visible log window only. Saved log files are not deleted.")
-        self.clear_temp_button = self._make_action_button(secondary_actions, "Clear temp", self.clear_temp_from_ui, tooltip="Manually clear the full selected temp folder after confirmation.")
-        self.open_output_button = self._make_action_button(secondary_actions, "Open output", self.open_output_folder, tooltip="Open the selected output root folder in Windows Explorer.")
+        self.clear_temp_button = self._make_action_button(secondary_actions, "Clear build temp", self.clear_temp_from_ui, tooltip="Safely clear only RaG PBO Builder temp data. Unrelated files are left untouched.")
+        self.clear_full_temp_button = self._make_action_button(secondary_actions, "Clear all temp", self.clear_full_temp_from_ui, tooltip="Delete all contents inside the selected temp root after confirmation. Uses the same safety checks as temp cleanup.")
+        self.clear_cache_button = self._make_action_button(secondary_actions, "Clear build cache", self.clear_build_cache_from_ui, tooltip="Clear build-cache entries only for the selected source root and selected addon(s).")
         self.open_logs_button = self._make_action_button(secondary_actions, "Open logs", self.open_logs_folder, tooltip="Open the folder containing saved build logs.")
         self.latest_log_button = self._make_action_button(secondary_actions, "Latest log", self.open_latest_log, tooltip="Open the newest saved build log file.")
-        self.clear_cache_button = self._make_action_button(secondary_actions, "Clear cache", self.clear_build_cache_from_ui, tooltip="Clear build-cache entries only for the selected source root and selected addon(s).")
 
-        log_frame = ttk.LabelFrame(outer, text="Log", padding=18)
-        log_frame.pack(fill="both", expand=True, pady=(14, 0))
-        self.log_text = tk.Text(log_frame, wrap="word", height=24, font=("Consolas", 9), bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT)
+        log_frame = ttk.LabelFrame(outer, text="Log", padding=14)
+        log_frame.pack(fill="both", expand=True, pady=(10, 0))
+        self.log_text = tk.Text(log_frame, wrap="word", height=34, font=("Consolas", 9), bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT)
         self.log_text.pack(side="left", fill="both", expand=True)
         add_tooltip(self.log_text, "Build output, Binarize output, signing output, warnings, and errors.")
         scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
@@ -2079,47 +2445,81 @@ class RaGPboBuilderApp(tk.Tk):
             selectcolor=GRAPHITE_CARD_SOFT,
             relief="flat",
             borderwidth=0,
-            padx=12,
-            pady=7,
-            font=("Segoe UI", 10),
+            padx=10,
+            pady=5,
+            font=("Segoe UI", 9),
             cursor="hand2",
             anchor="center",
         )
-        checkbox.grid(row=row, column=column, sticky="w", pady=(0, 8), padx=(0, 10))
+        checkbox.grid(row=row, column=column, sticky="w", pady=(0, 6), padx=(0, 8))
         refresh_toggle()
         add_tooltip(checkbox, tooltip)
         return checkbox
 
-    def _make_action_button(self, parent, text, command, primary=False, tooltip=""):
+    def _make_action_button(self, parent, text, command, primary=False, tooltip="", variant="", large=False):
+        if primary:
+            bg = GRAPHITE_ACCENT_DARK
+            fg = "#ffffff"
+            active_bg = GRAPHITE_ACCENT
+            active_fg = "#ffffff"
+            weight = "bold"
+        elif variant == "preflight":
+            bg = GRAPHITE_PREFLIGHT
+            fg = "#ffffff"
+            active_bg = GRAPHITE_PREFLIGHT_ACTIVE
+            active_fg = "#ffffff"
+            weight = "bold"
+        else:
+            bg = GRAPHITE_CARD_SOFT
+            fg = GRAPHITE_TEXT
+            active_bg = GRAPHITE_BORDER
+            active_fg = GRAPHITE_TEXT
+            weight = "normal"
+
         button = tk.Button(
             parent,
             text=text,
             command=command,
-            bg=GRAPHITE_ACCENT_DARK if primary else GRAPHITE_CARD_SOFT,
-            fg="#ffffff" if primary else GRAPHITE_TEXT,
-            activebackground=GRAPHITE_ACCENT if primary else GRAPHITE_BORDER,
-            activeforeground="#ffffff" if primary else GRAPHITE_TEXT,
+            bg=bg,
+            fg=fg,
+            activebackground=active_bg,
+            activeforeground=active_fg,
             relief="flat",
             borderwidth=0,
-            padx=14,
-            pady=8,
-            font=("Segoe UI", 10, "bold" if primary else "normal"),
+            padx=14 if large else 10,
+            pady=8 if large else 6,
+            font=("Segoe UI", 10 if large else 9, weight),
             cursor="hand2",
         )
         button.pack(side="left", padx=(0 if primary else 8, 0))
         add_tooltip(button, tooltip)
         return button
 
-    def _add_folder_row(self, parent, row, label, variable, command, tooltip=""):
+    def _add_folder_row(self, parent, row, label, variable, command, tooltip="", open_command=None, open_tooltip=""):
         label_widget = ttk.Label(parent, text=label)
-        label_widget.grid(row=row, column=0, sticky="w", pady=5)
+        label_widget.grid(row=row, column=0, sticky="w", pady=4)
         add_tooltip(label_widget, tooltip)
+
         entry = ttk.Entry(parent, textvariable=variable)
-        entry.grid(row=row, column=1, sticky="ew", pady=5, padx=(8, 8))
+        entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 8))
         add_tooltip(entry, tooltip)
-        button = ttk.Button(parent, text="Browse", command=command)
-        button.grid(row=row, column=2, sticky="e", pady=5)
-        add_tooltip(button, tooltip)
+
+        action_frame = ttk.Frame(parent, width=230)
+        action_frame.grid(row=row, column=2, sticky="e", pady=4)
+        action_frame.grid_propagate(False)
+
+        if open_command:
+            open_button = ttk.Button(action_frame, text="Open", command=open_command, width=8)
+            open_button.pack(side="right")
+            add_tooltip(open_button, open_tooltip or "Open the selected folder in Windows Explorer.")
+
+            browse_button = ttk.Button(action_frame, text="Browse", command=command, width=10)
+            browse_button.pack(side="right", padx=(0, 6))
+            add_tooltip(browse_button, tooltip)
+        else:
+            browse_button = ttk.Button(action_frame, text="Browse", command=command, width=10)
+            browse_button.pack(side="right")
+            add_tooltip(browse_button, tooltip)
 
     def _add_file_row(self, parent, row, label, variable, command, tooltip=""):
         label_widget = ttk.Label(parent, text=label)
@@ -2244,7 +2644,7 @@ class RaGPboBuilderApp(tk.Tk):
         self._add_file_row(options_frame, 2, "DSSignFile.exe", self.dssignfile_exe_var, self.choose_dssignfile_exe, "Path to DayZ Tools DSSignFile.exe.")
         self._add_file_row(options_frame, 3, "Private key", self.private_key_var, self.choose_private_key, "Your .biprivatekey. Never distribute this file.")
         self._add_folder_row(options_frame, 4, "Project root", self.project_root_var, self.choose_project_root, "Usually P: or your DayZ project drive root.")
-        self._add_folder_row(options_frame, 5, "Temp dir", self.temp_dir_var, self.choose_temp_dir, "Temporary staging folder. Manual Clear temp deletes this folder.")
+        self._add_folder_row(options_frame, 5, "Temp dir", self.temp_dir_var, self.choose_temp_dir, "Temporary staging folder. Clear build temp only removes known builder temp folders inside this path.")
         ttk.Label(options_frame, text="Exclude patterns").grid(row=6, column=0, sticky="nw", pady=5)
         exclude_entry = tk.Text(options_frame, height=5, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
         exclude_entry.grid(row=6, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
@@ -2307,7 +2707,7 @@ class RaGPboBuilderApp(tk.Tk):
         try:
             max_processes = int(self.max_processes_var.get())
         except Exception:
-            max_processes = 16
+            max_processes = get_default_max_processes()
         data = {
             "source_root": self.source_root_var.get().strip(),
             "output_root": self.output_root_var.get().strip(),
@@ -2474,7 +2874,7 @@ class RaGPboBuilderApp(tk.Tk):
         try:
             max_processes = int(self.max_processes_var.get())
         except Exception:
-            max_processes = 16
+            max_processes = get_default_max_processes()
         if max_processes < 1:
             max_processes = 1
         log_path = str(create_build_log_path())
@@ -2538,12 +2938,24 @@ class RaGPboBuilderApp(tk.Tk):
         self.log_queue.put(("progress", (current, total)))
 
     def _poll_log_queue(self):
+        log_batch = []
+
+        def flush_log_batch():
+            if log_batch:
+                self.log_many(log_batch)
+                log_batch.clear()
+
         try:
             while True:
                 item_type, payload = self.log_queue.get_nowait()
+
                 if item_type == "log":
-                    self.log(payload)
-                elif item_type == "progress":
+                    log_batch.append(payload)
+                    continue
+
+                flush_log_batch()
+
+                if item_type == "progress":
                     current, total = payload
                     maximum = max(total, 1)
                     self.progress.configure(maximum=maximum, value=current)
@@ -2580,24 +2992,36 @@ class RaGPboBuilderApp(tk.Tk):
                     self.close_current_log_file()
                     messagebox.showerror(APP_TITLE, payload)
         except queue.Empty:
-            pass
+            flush_log_batch()
+
         self.after(100, self._poll_log_queue)
 
     def log(self, message):
-        line = str(message)
-        self.log_text.insert("end", line + chr(10))
+        self.log_many([message])
+
+    def log_many(self, messages):
+        lines = [str(message) for message in messages]
+
+        if not lines:
+            return
+
+        self.log_text.insert("end", chr(10).join(lines) + chr(10))
         self.log_text.see("end")
-        self.update_idletasks()
+
         try:
-            print(line, flush=True)
+            for line in lines:
+                print(line, flush=True)
         except Exception:
             pass
+
         if self.current_log_file:
             try:
-                self.current_log_file.write(line + chr(10))
+                self.current_log_file.write(chr(10).join(lines) + chr(10))
                 self.current_log_file.flush()
             except Exception:
                 pass
+
+        self.update_idletasks()
 
     def close_current_log_file(self):
         if self.current_log_file:
@@ -2640,21 +3064,76 @@ class RaGPboBuilderApp(tk.Tk):
             self.log(f"ERROR: {e}")
             messagebox.showerror(APP_TITLE, str(e))
 
-    def open_output_folder(self):
+    def clear_full_temp_from_ui(self):
+        if self.is_building:
+            messagebox.showwarning(APP_TITLE, "Cannot clear all temp while a build is running.")
+            return
+
+        temp_dir = self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR
+
+        if not temp_dir:
+            messagebox.showerror(APP_TITLE, "Temp dir is empty.")
+            return
+
+        source_root = self.source_root_var.get().strip()
         output_root = self.output_root_var.get().strip()
-        if not output_root:
-            messagebox.showerror(APP_TITLE, "Output root folder is empty.")
+
+        confirm_message = (
+            "Clear ALL selected temp folder contents?" + chr(10) + chr(10)
+            + "Temp root:" + chr(10)
+            + temp_dir + chr(10) + chr(10)
+            + "This removes every file and folder inside the temp root, except the builder marker file." + chr(10)
+            + "Only use this if the temp root is dedicated to RaG PBO Builder." + chr(10) + chr(10)
+            + "The same safety checks are used to reject dangerous paths."
+        )
+
+        confirm = messagebox.askyesno(APP_TITLE, confirm_message)
+
+        if not confirm:
             return
-        if not os.path.isdir(output_root):
-            messagebox.showerror(APP_TITLE, f"Output root folder does not exist: {output_root}")
+
+        try:
+            clear_full_temp_folder(temp_dir, self.log, source_root, output_root)
+            messagebox.showinfo(APP_TITLE, "All temp folder contents cleared.")
+        except Exception as e:
+            self.log("")
+            self.log(f"ERROR: {e}")
+            messagebox.showerror(APP_TITLE, str(e))
+
+    def open_folder_in_explorer(self, folder_path, empty_message, missing_message):
+        folder_path = folder_path.strip() if folder_path else ""
+
+        if not folder_path:
+            messagebox.showerror(APP_TITLE, empty_message)
             return
+
+        if not os.path.isdir(folder_path):
+            messagebox.showerror(APP_TITLE, missing_message.format(folder_path=folder_path))
+            return
+
         try:
             if os.name == "nt":
-                os.startfile(output_root)
+                os.startfile(folder_path)
             else:
-                subprocess.Popen(["xdg-open", output_root])
+                subprocess.Popen(["xdg-open", folder_path])
         except Exception as e:
             messagebox.showerror(APP_TITLE, str(e))
+
+    def open_source_root_folder(self):
+        source_root = self.source_root_var.get().strip()
+        self.open_folder_in_explorer(
+            source_root,
+            "Source root folder is empty.",
+            "Source root folder does not exist: {folder_path}",
+        )
+
+    def open_output_folder(self):
+        output_root = self.output_root_var.get().strip()
+        self.open_folder_in_explorer(
+            output_root,
+            "Output root folder is empty.",
+            "Output root folder does not exist: {folder_path}",
+        )
 
     def open_logs_folder(self):
         logs_dir = get_logs_dir()
