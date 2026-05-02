@@ -37,9 +37,9 @@ It helps pack, binarize, convert, sign, check, and organize DayZ addon PBOs.
 
 ![Main Window 2](screenshots/RaG_PBO_Builder2.png)
 
-![Successful Build](screenshots/RaG_PBO_Builder3.png)
+![Successful](screenshots/RaG_PBO_Builder3.png)
 
-![Settings Window](screenshots/RaG_PBO_Builder4.png)
+![Settings](screenshots/RaG_PBO_Builder4.png)
 
 ---
 
