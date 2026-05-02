@@ -38,7 +38,7 @@ from tkinter import filedialog, messagebox, ttk
 
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.1.0 Beta"
+APP_VERSION = "0.5.0 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -110,17 +110,27 @@ def get_default_max_processes():
 
 
 GRAPHITE_BG = "#24262b"
+GRAPHITE_HEADER = "#1f2126"
 GRAPHITE_CARD = "#2f3238"
 GRAPHITE_CARD_SOFT = "#383c44"
 GRAPHITE_FIELD = "#292c32"
 GRAPHITE_BORDER = "#4a505b"
+GRAPHITE_BORDER_SOFT = "#3a3f48"
 GRAPHITE_TEXT = "#f1f1f1"
 GRAPHITE_MUTED = "#b8bec8"
 GRAPHITE_ACCENT = "#a74747"
 GRAPHITE_ACCENT_DARK = "#7f3434"
+GRAPHITE_ACCENT_HOVER = "#b65353"
 GRAPHITE_PREFLIGHT = "#4f5f72"
 GRAPHITE_PREFLIGHT_ACTIVE = "#60748b"
+GRAPHITE_PREFLIGHT_HOVER = "#6e849d"
+GRAPHITE_WARNING = "#d6aa5f"
+GRAPHITE_SUCCESS = "#7fb087"
+GRAPHITE_SUCCESS_DARK = "#41684a"
+GRAPHITE_READY = "#4d657f"
+GRAPHITE_BUILDING = "#7f5f3a"
 GRAPHITE_ERROR = "#ff7070"
+GRAPHITE_ERROR_DARK = "#7f3434"
 
 ZERO = bytes([0])
 WIN_SEP = chr(92)
@@ -213,6 +223,22 @@ def get_initial_dir_from_value(value, fallback=""):
         if parent and os.path.isdir(parent):
             return parent
     return str(Path.home())
+
+
+def is_safe_window_geometry(value):
+    if not value or not isinstance(value, str):
+        return False
+
+    # Accept normal Tk geometry strings like 1080x900 or 1080x900+120+80.
+    match = re.match(r"^(\d+)x(\d+)([+-]\d+[+-]\d+)?$", value.strip())
+
+    if not match:
+        return False
+
+    width = int(match.group(1))
+    height = int(match.group(2))
+
+    return width >= 800 and height >= 600
 
 
 def resource_path(relative_path):
@@ -2127,9 +2153,12 @@ def build_all(settings, log, progress_callback):
 class RaGPboBuilderApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.saved_settings = load_saved_settings()
         self.title(APP_TITLE)
         self.set_window_icon()
-        self.geometry("1080x900")
+
+        saved_geometry = self.saved_settings.get("window_geometry", "")
+        self.geometry(saved_geometry if is_safe_window_geometry(saved_geometry) else "1080x900")
         self.minsize(960, 830)
         self._apply_graphite_theme()
 
@@ -2139,8 +2168,8 @@ class RaGPboBuilderApp(tk.Tk):
         self.current_log_file = None
         self.current_log_path = ""
         self.current_addon_targets = []
-        self.status_var = tk.StringVar(value="Status: Idle")
-        self.saved_settings = load_saved_settings()
+        self.geometry_save_after_id = None
+        self.status_var = tk.StringVar(value="Idle")
 
         saved_pbo_name = self.saved_settings.get("pbo_name", self.saved_settings.get("prefix_root", ""))
         saved_output_root = self.saved_settings.get("output_root", self.saved_settings.get("output_addons", ""))
@@ -2162,8 +2191,12 @@ class RaGPboBuilderApp(tk.Tk):
         self.exclude_patterns_var = tk.StringVar(value=self.saved_settings.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS))
 
         self._build_ui()
+        self.set_status("Idle", "ready")
         self.refresh_addon_list(select_saved=True)
         self._poll_log_queue()
+
+        self.bind("<Configure>", self.on_window_configure)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def set_window_icon(self):
         icon_path = resource_path(APP_ICON_FILE)
@@ -2187,9 +2220,12 @@ class RaGPboBuilderApp(tk.Tk):
             pass
         style.configure(".", background=GRAPHITE_BG, foreground=GRAPHITE_TEXT, fieldbackground=GRAPHITE_FIELD, font=("Segoe UI", 10))
         style.configure("TFrame", background=GRAPHITE_BG)
-        style.configure("TLabelframe", background=GRAPHITE_CARD, foreground=GRAPHITE_TEXT, bordercolor=GRAPHITE_BG, lightcolor=GRAPHITE_CARD, darkcolor=GRAPHITE_BG, relief="flat", padding=18)
+        style.configure("Header.TFrame", background=GRAPHITE_HEADER)
+        style.configure("Card.TFrame", background=GRAPHITE_CARD)
+        style.configure("TLabelframe", background=GRAPHITE_CARD, foreground=GRAPHITE_TEXT, bordercolor=GRAPHITE_BORDER_SOFT, lightcolor=GRAPHITE_CARD, darkcolor=GRAPHITE_CARD, relief="flat", padding=18)
         style.configure("TLabelframe.Label", background=GRAPHITE_CARD, foreground=GRAPHITE_TEXT, font=("Segoe UI", 10, "bold"))
         style.configure("TLabel", background=GRAPHITE_BG, foreground=GRAPHITE_TEXT)
+        style.configure("Header.TLabel", background=GRAPHITE_HEADER, foreground=GRAPHITE_TEXT)
         style.configure("TCheckbutton", background=GRAPHITE_CARD, foreground=GRAPHITE_TEXT, padding=5)
         style.configure("TButton", background=GRAPHITE_CARD_SOFT, foreground=GRAPHITE_TEXT, bordercolor=GRAPHITE_CARD_SOFT, lightcolor=GRAPHITE_CARD_SOFT, darkcolor=GRAPHITE_CARD_SOFT, focusthickness=0, focuscolor=GRAPHITE_CARD_SOFT, relief="flat", padding=(12, 8))
         style.configure("TEntry", fieldbackground=GRAPHITE_FIELD, background=GRAPHITE_FIELD, foreground=GRAPHITE_TEXT, insertcolor=GRAPHITE_TEXT, bordercolor=GRAPHITE_BORDER, lightcolor=GRAPHITE_FIELD, darkcolor=GRAPHITE_FIELD, relief="flat", padding=7)
@@ -2205,14 +2241,35 @@ class RaGPboBuilderApp(tk.Tk):
         outer = ttk.Frame(self, padding=18)
         outer.pack(fill="both", expand=True)
 
-        header = ttk.Frame(outer)
-        header.pack(fill="x", pady=(0, 12))
-        title = ttk.Label(header, text=APP_TITLE, font=("Segoe UI", 19, "bold"))
-        title.pack(side="left")
-        subtitle = ttk.Label(header, text="Build selected DayZ addons into Addons and Keys output folders", foreground=GRAPHITE_MUTED)
-        subtitle.pack(side="left", padx=(14, 0), pady=(8, 0))
+        header = tk.Frame(outer, bg=GRAPHITE_HEADER, bd=0, highlightthickness=0)
+        header.pack(fill="x", pady=(0, 10), ipady=5)
+
+        header_left = tk.Frame(header, bg=GRAPHITE_HEADER, bd=0, highlightthickness=0)
+        header_left.pack(side="left", fill="x", expand=True, padx=(14, 8))
+
+        title = tk.Label(
+            header_left,
+            text=APP_TITLE,
+            bg=GRAPHITE_HEADER,
+            fg=GRAPHITE_TEXT,
+            font=("Segoe UI", 18, "bold"),
+        )
+        title.pack(anchor="w")
+
+        subtitle = tk.Label(
+            header_left,
+            text="Build selected DayZ addons into Addons and Keys output folders",
+            bg=GRAPHITE_HEADER,
+            fg=GRAPHITE_MUTED,
+            font=("Segoe UI", 9),
+        )
+        subtitle.pack(anchor="w", pady=(0, 0))
+
+        header_right = tk.Frame(header, bg=GRAPHITE_HEADER, bd=0, highlightthickness=0)
+        header_right.pack(side="right", padx=(8, 14))
+
         self.about_button = tk.Button(
-            header,
+            header_right,
             text="About",
             command=self.open_about_window,
             bg=GRAPHITE_CARD_SOFT,
@@ -2227,10 +2284,11 @@ class RaGPboBuilderApp(tk.Tk):
             cursor="hand2",
         )
         self.about_button.pack(side="right")
+        self._attach_button_hover(self.about_button, GRAPHITE_CARD_SOFT, GRAPHITE_BORDER, GRAPHITE_BORDER)
         add_tooltip(self.about_button, "Show version, author, and safety information.")
 
         self.licence_button = tk.Button(
-            header,
+            header_right,
             text="Licence",
             command=self.open_licence_window,
             bg=GRAPHITE_CARD_SOFT,
@@ -2245,10 +2303,11 @@ class RaGPboBuilderApp(tk.Tk):
             cursor="hand2",
         )
         self.licence_button.pack(side="right", padx=(0, 8))
+        self._attach_button_hover(self.licence_button, GRAPHITE_CARD_SOFT, GRAPHITE_BORDER, GRAPHITE_BORDER)
         add_tooltip(self.licence_button, "Show licence terms and warranty disclaimer.")
 
         self.options_button = tk.Button(
-            header,
+            header_right,
             text="Options",
             command=self.open_options_window,
             bg=GRAPHITE_CARD_SOFT,
@@ -2263,10 +2322,11 @@ class RaGPboBuilderApp(tk.Tk):
             cursor="hand2",
         )
         self.options_button.pack(side="right", padx=(0, 8))
+        self._attach_button_hover(self.options_button, GRAPHITE_CARD_SOFT, GRAPHITE_BORDER, GRAPHITE_BORDER)
         add_tooltip(self.options_button, "Open tool paths, temp folder, project root, private key, and exclude pattern settings.")
 
-        settings = ttk.LabelFrame(outer, text="Build settings", padding=14)
-        settings.pack(fill="x", pady=(0, 12))
+        settings = ttk.LabelFrame(outer, text="Build settings", padding=10)
+        settings.pack(fill="x", pady=(0, 10))
         self._add_folder_row(
             settings,
             0,
@@ -2288,13 +2348,13 @@ class RaGPboBuilderApp(tk.Tk):
             "Open the selected Output root folder in Windows Explorer.",
         )
         label = ttk.Label(settings, text="PBO name")
-        label.grid(row=2, column=0, sticky="w", pady=4)
+        label.grid(row=2, column=0, sticky="w", pady=3)
         add_tooltip(label, "Optional PBO filename override. Only used when exactly one addon is selected.")
         entry = ttk.Entry(settings, textvariable=self.pbo_name_var)
-        entry.grid(row=2, column=1, sticky="ew", pady=4, padx=(8, 8))
+        entry.grid(row=2, column=1, sticky="ew", pady=3, padx=(8, 8))
         add_tooltip(entry, "Leave empty to use the selected addon folder name. Only applies to single-addon builds.")
         hint_frame = ttk.Frame(settings, width=230)
-        hint_frame.grid(row=2, column=2, sticky="e", pady=4)
+        hint_frame.grid(row=2, column=2, sticky="e", pady=3)
         hint_frame.grid_propagate(False)
 
         hint = ttk.Label(hint_frame, text="Optional, single-addon builds only", foreground=GRAPHITE_MUTED)
@@ -2304,28 +2364,28 @@ class RaGPboBuilderApp(tk.Tk):
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(2, minsize=230)
 
-        options_frame = ttk.LabelFrame(outer, text="Build options", padding=18)
-        options_frame.pack(fill="x", pady=(0, 14))
+        options_frame = ttk.LabelFrame(outer, text="Build options", padding=12)
+        options_frame.pack(fill="x", pady=(0, 10))
 
         pipeline_label = ttk.Label(options_frame, text="Build pipeline", foreground=GRAPHITE_MUTED)
-        pipeline_label.grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 14))
+        pipeline_label.grid(row=0, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         add_tooltip(pipeline_label, "Main build steps that change how addon files are processed before packing.")
         self._add_checkbutton(options_frame, "Binarize P3D", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D files.")
         self._add_checkbutton(options_frame, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
         self._add_checkbutton(options_frame, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
 
         safety_label = ttk.Label(options_frame, text="Safety", foreground=GRAPHITE_MUTED)
-        safety_label.grid(row=1, column=0, sticky="w", pady=(0, 8), padx=(0, 14))
+        safety_label.grid(row=1, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         add_tooltip(safety_label, "Safety and validation options. Content-safe cache checks are always enabled internally.")
         self._add_checkbutton(options_frame, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
         self._add_checkbutton(options_frame, "Preflight before build", self.preflight_before_build_var, 1, 2, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.")
 
         performance_label = ttk.Label(options_frame, text="Performance", foreground=GRAPHITE_MUTED)
-        performance_label.grid(row=2, column=0, sticky="w", pady=(0, 4), padx=(0, 14))
+        performance_label.grid(row=2, column=0, sticky="w", pady=(0, 2), padx=(0, 14))
         add_tooltip(performance_label, "Performance tuning for external DayZ Tools processes.")
 
         max_frame = ttk.Frame(options_frame)
-        max_frame.grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 4), padx=(0, 0))
+        max_frame.grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 2), padx=(0, 0))
         label = ttk.Label(max_frame, text="Max processes")
         label.pack(side="left")
         add_tooltip(label, f"Passed to binarize.exe as maxProcesses. Default uses all available logical threads: {get_default_max_processes()}.")
@@ -2335,8 +2395,8 @@ class RaGPboBuilderApp(tk.Tk):
 
         options_frame.columnconfigure(4, weight=1)
 
-        addons_frame = ttk.LabelFrame(outer, text="Addon selection", padding=18)
-        addons_frame.pack(fill="both", expand=True, pady=(0, 14))
+        addons_frame = ttk.LabelFrame(outer, text="Addon selection", padding=12)
+        addons_frame.pack(fill="both", expand=True, pady=(0, 10))
         addons_frame.columnconfigure(0, weight=1)
         addons_frame.rowconfigure(0, weight=1)
         self.addon_listbox = tk.Listbox(
@@ -2374,15 +2434,29 @@ class RaGPboBuilderApp(tk.Tk):
         add_tooltip(select_none_button, "Clear the addon selection.")
 
         actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(8, 0))
+        actions.pack(fill="x", pady=(6, 0))
         primary_actions = ttk.Frame(actions)
         primary_actions.pack(fill="x")
         secondary_actions = ttk.Frame(actions)
-        secondary_actions.pack(fill="x", pady=(5, 0))
+        secondary_actions.pack(fill="x", pady=(4, 0))
         self.build_button = self._make_action_button(primary_actions, "Build PBOs", self.start_build, primary=True, large=True, tooltip="Build the currently selected addon(s).")
         self.preflight_button = self._make_action_button(primary_actions, "Preflight", self.start_preflight, variant="preflight", large=True, tooltip="Check selected addon(s) for config syntax errors and missing referenced files before packing.")
+        self.status_badge = tk.Label(
+            primary_actions,
+            text="Ready",
+            bg=GRAPHITE_READY,
+            fg="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=5,
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.status_badge.pack(side="left", padx=(14, 6))
+        add_tooltip(self.status_badge, "Current builder status.")
+
         self.status_label = ttk.Label(primary_actions, textvariable=self.status_var, foreground=GRAPHITE_MUTED, width=20)
-        self.status_label.pack(side="left", padx=(14, 4))
+        self.status_label.pack(side="left", padx=(0, 4))
         add_tooltip(self.status_label, "Current builder status.")
         self.progress = ttk.Progressbar(primary_actions, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True, padx=(4, 0))
@@ -2394,10 +2468,11 @@ class RaGPboBuilderApp(tk.Tk):
         self.open_logs_button = self._make_action_button(secondary_actions, "Open logs", self.open_logs_folder, tooltip="Open the folder containing saved build logs.")
         self.latest_log_button = self._make_action_button(secondary_actions, "Latest log", self.open_latest_log, tooltip="Open the newest saved build log file.")
 
-        log_frame = ttk.LabelFrame(outer, text="Log", padding=14)
-        log_frame.pack(fill="both", expand=True, pady=(10, 0))
-        self.log_text = tk.Text(log_frame, wrap="word", height=34, font=("Consolas", 9), bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT)
+        log_frame = ttk.LabelFrame(outer, text="Log", padding=10)
+        log_frame.pack(fill="both", expand=True, pady=(8, 0))
+        self.log_text = tk.Text(log_frame, wrap="word", height=42, font=("Consolas", 9), bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT)
         self.log_text.pack(side="left", fill="both", expand=True)
+        self.configure_log_tags()
         add_tooltip(self.log_text, "Build output, Binarize output, signing output, warnings, and errors.")
         scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         scrollbar.pack(side="right", fill="y")
@@ -2445,34 +2520,73 @@ class RaGPboBuilderApp(tk.Tk):
             selectcolor=GRAPHITE_CARD_SOFT,
             relief="flat",
             borderwidth=0,
-            padx=10,
-            pady=5,
+            padx=9,
+            pady=4,
             font=("Segoe UI", 9),
             cursor="hand2",
             anchor="center",
         )
-        checkbox.grid(row=row, column=column, sticky="w", pady=(0, 6), padx=(0, 8))
+        checkbox.grid(row=row, column=column, sticky="w", pady=(0, 4), padx=(0, 8))
         refresh_toggle()
         add_tooltip(checkbox, tooltip)
         return checkbox
+
+    def _attach_button_hover(self, button, normal_bg, hover_bg, pressed_bg=None):
+        pressed_bg = pressed_bg or hover_bg
+
+        def on_enter(event=None):
+            try:
+                if str(button.cget("state")) != "disabled":
+                    button.configure(bg=hover_bg, activebackground=pressed_bg)
+            except Exception:
+                pass
+
+        def on_leave(event=None):
+            try:
+                button.configure(bg=normal_bg, activebackground=pressed_bg)
+            except Exception:
+                pass
+
+        button.bind("<Enter>", on_enter)
+        button.bind("<Leave>", on_leave)
+
+    def set_status(self, text, state="ready"):
+        self.status_var.set(text)
+
+        if not hasattr(self, "status_badge"):
+            return
+
+        state_map = {
+            "ready": ("Ready", GRAPHITE_READY),
+            "building": ("Building", GRAPHITE_BUILDING),
+            "preflight": ("Preflight", GRAPHITE_PREFLIGHT),
+            "success": ("Done", GRAPHITE_SUCCESS_DARK),
+            "error": ("Error", GRAPHITE_ERROR_DARK),
+        }
+
+        badge_text, badge_bg = state_map.get(state, state_map["ready"])
+        self.status_badge.configure(text=badge_text, bg=badge_bg)
 
     def _make_action_button(self, parent, text, command, primary=False, tooltip="", variant="", large=False):
         if primary:
             bg = GRAPHITE_ACCENT_DARK
             fg = "#ffffff"
             active_bg = GRAPHITE_ACCENT
+            hover_bg = GRAPHITE_ACCENT_HOVER
             active_fg = "#ffffff"
             weight = "bold"
         elif variant == "preflight":
             bg = GRAPHITE_PREFLIGHT
             fg = "#ffffff"
             active_bg = GRAPHITE_PREFLIGHT_ACTIVE
+            hover_bg = GRAPHITE_PREFLIGHT_HOVER
             active_fg = "#ffffff"
             weight = "bold"
         else:
             bg = GRAPHITE_CARD_SOFT
             fg = GRAPHITE_TEXT
             active_bg = GRAPHITE_BORDER
+            hover_bg = GRAPHITE_BORDER
             active_fg = GRAPHITE_TEXT
             weight = "normal"
 
@@ -2486,26 +2600,27 @@ class RaGPboBuilderApp(tk.Tk):
             activeforeground=active_fg,
             relief="flat",
             borderwidth=0,
-            padx=14 if large else 10,
-            pady=8 if large else 6,
+            padx=14 if large else 9,
+            pady=8 if large else 5,
             font=("Segoe UI", 10 if large else 9, weight),
             cursor="hand2",
         )
         button.pack(side="left", padx=(0 if primary else 8, 0))
+        self._attach_button_hover(button, bg, hover_bg, active_bg)
         add_tooltip(button, tooltip)
         return button
 
     def _add_folder_row(self, parent, row, label, variable, command, tooltip="", open_command=None, open_tooltip=""):
         label_widget = ttk.Label(parent, text=label)
-        label_widget.grid(row=row, column=0, sticky="w", pady=4)
+        label_widget.grid(row=row, column=0, sticky="w", pady=3)
         add_tooltip(label_widget, tooltip)
 
         entry = ttk.Entry(parent, textvariable=variable)
-        entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 8))
+        entry.grid(row=row, column=1, sticky="ew", pady=3, padx=(8, 8))
         add_tooltip(entry, tooltip)
 
         action_frame = ttk.Frame(parent, width=230)
-        action_frame.grid(row=row, column=2, sticky="e", pady=4)
+        action_frame.grid(row=row, column=2, sticky="e", pady=3)
         action_frame.grid_propagate(False)
 
         if open_command:
@@ -2726,6 +2841,7 @@ class RaGPboBuilderApp(tk.Tk):
             "temp_dir": self.temp_dir_var.get().strip(),
             "exclude_patterns": self.exclude_patterns_var.get().strip(),
             "selected_addons": self.get_selected_addon_names() if hasattr(self, "addon_listbox") else [],
+            "window_geometry": self.geometry() if is_safe_window_geometry(self.geometry()) else self.saved_settings.get("window_geometry", ""),
         }
         save_saved_settings(data)
 
@@ -2819,7 +2935,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.build_button.configure(state="disabled")
         self.preflight_button.configure(state="disabled")
         self.progress.configure(value=0, maximum=100)
-        self.status_var.set("Status: Preflight running...")
+        self.set_status("Preflight running...", "preflight")
         self.log("Starting preflight check...")
         if self.current_log_path:
             self.log(f"Log file: {self.current_log_path}")
@@ -2917,7 +3033,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.build_button.configure(state="disabled")
         self.preflight_button.configure(state="disabled")
         self.progress.configure(value=0, maximum=100)
-        self.status_var.set("Status: Build running...")
+        self.set_status("Build running...", "building")
         self.log("Starting build...")
         if self.current_log_path:
             self.log(f"Log file: {self.current_log_path}")
@@ -2936,6 +3052,48 @@ class RaGPboBuilderApp(tk.Tk):
 
     def thread_progress(self, current, total):
         self.log_queue.put(("progress", (current, total)))
+
+    def configure_log_tags(self):
+        self.log_text.tag_configure("log_error", foreground=GRAPHITE_ERROR)
+        self.log_text.tag_configure("log_warning", foreground=GRAPHITE_WARNING)
+        self.log_text.tag_configure("log_success", foreground=GRAPHITE_SUCCESS)
+        self.log_text.tag_configure("log_section", foreground=GRAPHITE_MUTED)
+        self.log_text.tag_configure("log_tool", foreground=GRAPHITE_PREFLIGHT_ACTIVE)
+
+    def get_log_tag(self, line):
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if not stripped:
+            return ""
+
+        if upper.startswith("ERROR") or " ERROR:" in upper:
+            return "log_error"
+
+        if upper.startswith("WARNING") or " WARNING:" in upper:
+            return "log_warning"
+
+        if (
+            "BUILD FINISHED" in upper
+            or "COMPLETED SUCCESSFULLY" in upper
+            or upper.endswith(" OK")
+            or upper.endswith(": OK")
+            or "SYNTAX CHECK: OK" in upper
+        ):
+            return "log_success"
+
+        if stripped.startswith("=" * 8):
+            return "log_section"
+
+        if (
+            "Binarize" in stripped
+            or "CfgConvert" in stripped
+            or "DSSignFile" in stripped
+            or "Preflight" in stripped
+        ):
+            return "log_tool"
+
+        return ""
 
     def _poll_log_queue(self):
         log_batch = []
@@ -2959,13 +3117,13 @@ class RaGPboBuilderApp(tk.Tk):
                     current, total = payload
                     maximum = max(total, 1)
                     self.progress.configure(maximum=maximum, value=current)
-                    self.status_var.set(f"Status: Working... {current}/{maximum}")
+                    self.set_status(f"Working... {current}/{maximum}", "building")
                 elif item_type == "done":
                     self.is_building = False
                     self.build_button.configure(state="normal")
                     self.preflight_button.configure(state="normal")
                     self.progress.configure(value=self.progress.cget("maximum"))
-                    self.status_var.set("Status: Build finished")
+                    self.set_status("Build finished", "success")
                     self.close_current_log_file()
                     messagebox.showinfo(APP_TITLE, "Build finished.")
                 elif item_type == "preflight_done":
@@ -2973,7 +3131,7 @@ class RaGPboBuilderApp(tk.Tk):
                     self.build_button.configure(state="normal")
                     self.preflight_button.configure(state="normal")
                     self.progress.configure(value=self.progress.cget("maximum"))
-                    self.status_var.set("Status: Preflight finished")
+                    self.set_status("Preflight finished", "success")
                     self.close_current_log_file()
                     errors, warnings = payload
                     if errors:
@@ -2988,7 +3146,7 @@ class RaGPboBuilderApp(tk.Tk):
                     self.preflight_button.configure(state="normal")
                     self.log("")
                     self.log(f"ERROR: {payload}")
-                    self.status_var.set("Status: Error")
+                    self.set_status("Error", "error")
                     self.close_current_log_file()
                     messagebox.showerror(APP_TITLE, payload)
         except queue.Empty:
@@ -3005,7 +3163,13 @@ class RaGPboBuilderApp(tk.Tk):
         if not lines:
             return
 
-        self.log_text.insert("end", chr(10).join(lines) + chr(10))
+        for line in lines:
+            tag = self.get_log_tag(line)
+            if tag:
+                self.log_text.insert("end", line + chr(10), tag)
+            else:
+                self.log_text.insert("end", line + chr(10))
+
         self.log_text.see("end")
 
         try:
@@ -3022,6 +3186,42 @@ class RaGPboBuilderApp(tk.Tk):
                 pass
 
         self.update_idletasks()
+
+    def on_window_configure(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+
+        if self.state() == "zoomed":
+            return
+
+        if self.geometry_save_after_id:
+            try:
+                self.after_cancel(self.geometry_save_after_id)
+            except Exception:
+                pass
+
+        self.geometry_save_after_id = self.after(700, self.save_window_geometry)
+
+    def save_window_geometry(self):
+        self.geometry_save_after_id = None
+
+        geometry = self.geometry()
+
+        if not is_safe_window_geometry(geometry):
+            return
+
+        self.saved_settings["window_geometry"] = geometry
+        save_saved_settings(self.saved_settings)
+
+    def on_close(self):
+        try:
+            self.save_window_geometry()
+            self.save_path_settings()
+        except Exception:
+            pass
+
+        self.close_current_log_file()
+        self.destroy()
 
     def close_current_log_file(self):
         if self.current_log_file:

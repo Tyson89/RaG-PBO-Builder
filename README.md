@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.1.0 Beta  
+**Version:** 0.5.0 Beta  
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -14,6 +14,7 @@ It helps pack, binarize, convert, sign, check, and organize DayZ addon PBOs.
 - Pack selected addon folders into `.pbo` files
 - Build one addon or multiple addons at once
 - If the selected source root contains a `config.cpp`, it can be built as one addon
+- Support PBO prefix files such as `$PBOPREFIX$`, `$prefix$`, `$PBOPREFIX$.txt`, and `$prefix$.txt`
 - Binarize `.p3d` files with DayZ Tools
 - Convert `config.cpp` files to `config.bin`
 - Support nested `config.cpp` files inside subfolders
@@ -26,6 +27,7 @@ It helps pack, binarize, convert, sign, check, and organize DayZ addon PBOs.
 - Save build logs automatically
 - Run preflight checks before building
 - Use all available logical threads as the default for Binarize max processes
+- Save and restore the window size and position
 
 ---
 
@@ -33,9 +35,11 @@ It helps pack, binarize, convert, sign, check, and organize DayZ addon PBOs.
 
 ![Main Window](screenshots/RaG_PBO_Builder.png)
 
-![Settings Window](screenshots/RaG_PBO_Builder2.png)
+![Main Window](screenshots/RaG_PBO_Builder2.png)
 
-![Successful Build](screenshots/RaG_PBO_Builder3.png)
+![Settings Window](screenshots/RaG_PBO_Builder3.png)
+
+![Successful Build](screenshots/RaG_PBO_Builder4.png)
 
 ---
 
@@ -53,6 +57,39 @@ OutputRoot
 - `.bisign` files go into `Addons`
 - `.bikey` files go into `Keys`
 - Existing `.bikey` files are not overwritten
+
+---
+
+## PBO Prefix Support
+
+RaG PBO Builder supports addon prefix files.
+
+Supported prefix file names:
+
+```txt
+$PBOPREFIX$
+$prefix$
+$PBOPREFIX$.txt
+$prefix$.txt
+```
+
+If one of these files exists in the addon source folder, the first non-empty line is used as the internal PBO prefix.
+
+Example:
+
+```txt
+RaG_BaseBuilding
+```
+
+or:
+
+```txt
+RaG\BaseBuilding
+```
+
+If no prefix file exists, the builder falls back to the addon/PBO name.
+
+Prefix helper files are not packed into the final PBO.
 
 ---
 
@@ -141,6 +178,8 @@ Supported reference types include:
 .ptc
 ```
 
+Internal `.p3d` scanning is a best-effort scan.
+
 ---
 
 ## Temp Folder Handling
@@ -177,6 +216,7 @@ The tool also includes safer temp cleanup options:
 
 The interface includes:
 
+- Cleaner modern dark UI
 - Grouped build options:
   - Build pipeline
   - Safety
@@ -186,9 +226,12 @@ The interface includes:
 - `Open` buttons next to `Source root` and `Output root`
 - Clear build/log/cache/temp controls
 - Larger log area
-- Status label and progress bar
+- Colored log output for warnings, errors, success messages, sections, and tool-related lines
+- Status badge for Ready, Building, Preflight, Done, and Error states
+- Status text and progress bar
 - Licence and About windows
 - Version number shown in the tool
+- Saved window size and position
 
 ---
 
@@ -249,31 +292,6 @@ More info -> Run anyway
 ```
 
 Do not download modified versions from random reuploads.
-
----
-
-## Tests
-
-The repository can include fixture tests for the custom PBO writer.
-
-These tests are intended to check:
-
-- PBO creation
-- PBO prefix metadata
-- `$PBOPREFIX$` / `$prefix$` handling
-- Nested file payloads
-- Excluded files/folders
-- Non-ASCII path rejection
-- Failed build preservation behavior
-- Optional Mikero `ExtractPbo.exe` compatibility
-
-Run from the repository root:
-
-```powershell
-py tests\test_pbo_writer.py
-```
-
-These tests do not replace real DayZ in-game load testing.
 
 ---
 
