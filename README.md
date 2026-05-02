@@ -141,9 +141,6 @@ Supported reference types include:
 .ptc
 ```
 
-Internal P3D scanning is a best-effort scan.  
-It is not a full replacement for Mikero Tools or PBOProject.
-
 ---
 
 ## Temp Folder Handling
