@@ -252,31 +252,6 @@ Do not download modified versions from random reuploads.
 
 ---
 
-## Tests
-
-The repository can include fixture tests for the custom PBO writer.
-
-These tests are intended to check:
-
-- PBO creation
-- PBO prefix metadata
-- `$PBOPREFIX$` / `$prefix$` handling
-- Nested file payloads
-- Excluded files/folders
-- Non-ASCII path rejection
-- Failed build preservation behavior
-- Optional Mikero `ExtractPbo.exe` compatibility
-
-Run from the repository root:
-
-```powershell
-py tests\test_pbo_writer.py
-```
-
-These tests do not replace real DayZ in-game load testing.
-
----
-
 ## Licence
 
 RaG PBO Builder is freeware, but it is not open source.
