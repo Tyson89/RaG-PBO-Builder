@@ -28,6 +28,8 @@ It helps pack, binarize, convert, sign, check, and organize DayZ addon PBOs.
 - Run preflight checks before building
 - Use all available logical threads as the default for Binarize max processes
 - Save and restore the window size and position
+- Save named presets for `Source root` and `Output root`
+- Load Source and Output presets independently for faster project switching
 
 ---
 
@@ -90,6 +92,23 @@ RaG\BaseBuilding
 If no prefix file exists, the builder falls back to the addon/PBO name.
 
 Prefix helper files are not packed into the final PBO.
+
+---
+
+## Named Path Presets
+
+RaG PBO Builder supports named presets for `Source root` and `Output root`.
+
+Source and Output presets are saved separately, so they can be mixed freely.
+
+Example:
+
+```txt
+Source preset:
+RaG BaseBuilding -> P:\RaG_BaseBuilding
+
+Output preset:
+Stable Release -> D:\RaG Releases\Stable
 
 ---
 
