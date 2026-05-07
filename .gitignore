@@ -19,5 +19,4 @@ Thumbs.db
 desktop.ini
 
 # Release binaries are kept outside Git by default.
-*.exe
 !releases/.gitkeep
