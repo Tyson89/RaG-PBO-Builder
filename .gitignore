@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Logs and local app output
+*.log
+*_preflight_report.txt
+*_preflight_report.json
+
+# Local/editor noise
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+
+# Release binaries are kept outside Git by default.
+*.exe
+!releases/.gitkeep
