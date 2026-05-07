@@ -35,7 +35,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Load Project Source and Build Output presets independently for faster project switching
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
 - Includes additional terrain and mapper-focused WRP checks
-- Inspect and extract existing `.pbo` archives from a separate tool window
+- Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`
 
 ---
 
@@ -102,7 +102,7 @@ This keeps path switching convenient without accidentally changing important bui
 
 ## PBO Inspector / Extractor
 
-The `Inspector` button opens a separate window for existing `.pbo` archives.
+`RaG_PBO_Inspector.exe` is a separate tool for existing `.pbo` archives.
 
 The inspector can:
 
@@ -575,16 +575,28 @@ Python is not required when using the compiled `.exe` version.
 
 The source project keeps the icon in `assets/HEADONLY_SQUARE_2k.ico`.
 
-To build the executable, run this from the repository root:
+To build the builder executable, run this from the repository root:
 
 ```powershell
 .\build_rag_pbo_builder.ps1
 ```
 
-The generated executable is written to:
+The generated builder executable is written to:
 
 ```txt
 dist\RaG_PBO_Builder.exe
+```
+
+To build the standalone inspector/extractor:
+
+```powershell
+.\build_rag_pbo_inspector.ps1
+```
+
+The generated inspector executable is written to:
+
+```txt
+dist\RaG_PBO_Inspector.exe
 ```
 
 Generated `build`, `dist`, log, and release binary files are ignored by Git. Put public binaries in GitHub Releases instead of committing them to the source tree.

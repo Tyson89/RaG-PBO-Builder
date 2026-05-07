@@ -2,11 +2,13 @@
 
 ## 0.7.0 Beta
 
-- Added a separate PBO Inspector / Extractor window.
+- Split PBO inspection/extraction into standalone `RaG_PBO_Inspector.exe`.
+- Added shared `pbo_core.py` for PBO parsing and safe extraction.
 - Added PBO header parsing with prefix, file count, size, timestamp, and packing method display.
 - Added selected-file and full-archive extraction for stored/uncompressed PBO entries.
 - Added safe extraction path checks to prevent absolute paths and parent-folder traversal.
-- Updated README documentation for the inspector/extractor.
+- Removed inspector UI from the builder so `RaG_PBO_Builder.exe` stays focused on builds.
+- Added a separate inspector PyInstaller build script.
 
 ## 0.6.10 Beta
 
