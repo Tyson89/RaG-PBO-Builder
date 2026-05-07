@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.7.0 Beta  
+**Version:** 0.7.10 Beta  
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -36,6 +36,8 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
 - Includes additional terrain and mapper-focused WRP checks
 - Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`
+- Drop `.pbo` files directly into the inspector window on Windows
+- Convert extracted `.bin` files and rapified material files with `CfgConvert.exe`, while leaving non-config bins such as `texHeaders.bin` alone
 
 ---
 
@@ -107,13 +109,25 @@ This keeps path switching convenient without accidentally changing important bui
 The inspector can:
 
 - Read the PBO header
-- Show packed file paths, sizes, timestamps, and packing methods
+- Show packed files in an expandable folder tree with sizes, timestamps, and packing methods
 - Show the detected PBO prefix
-- Extract selected files
+- Accept `.pbo` files dropped directly into the window on Windows
+- Preview text-like entries in a built-in read-only viewer with C/config-style syntax highlighting
+- Inspect `.p3d` metadata such as ODOL/MLOD format, version, ODOL resolution-array LODs, textures, materials, proxies, and animation references
+- Open the text viewer from `View selected` or by double-clicking an entry
+- Reload a manually typed PBO path with `Reload PBO` or Enter
+- Extract selected files or selected folders
 - Extract the full archive
+- Convert extracted `.bin` files to `.cpp` and rapified material files such as `.rvmat` back to readable text with DayZ Tools `CfgConvert.exe`, while skipping `texHeaders.bin`
 - Refuse unsafe extract paths that try to escape the selected output folder
 
-Only stored/uncompressed PBO entries are extracted. Compressed or unsupported entries are listed but not extracted.
+Stored and BI LZSS-compressed `Cprs` PBO entries are extracted or previewed; unsupported entries are listed but not extracted. `.bin` to `.cpp` conversion, `.bin` preview, and rapified material text conversion require a valid `CfgConvert.exe` path, except `texHeaders.bin`, which is left as binary data. P3D inspection is a metadata scan, not debinarization, and does not recover `model.cfg`; use Mikero DeP3d/ExtractModelCfg for that. In-window drag/drop uses `tkinterdnd2`, which is bundled into the inspector EXE by the build script.
+
+Install Python dependencies before building from source:
+
+```powershell
+python -m pip install -r requirements.txt
+```
 
 ---
 

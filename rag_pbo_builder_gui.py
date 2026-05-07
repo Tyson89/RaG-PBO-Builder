@@ -37,7 +37,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.0 Beta"
+APP_VERSION = "0.7.10 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License

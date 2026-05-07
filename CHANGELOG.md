@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.7.10 Beta
+
+- Added `raP` detection for material-style files such as `.rvmat`, `.bisurf`, `.surface`, and `.mat`.
+- `View selected` now derapifies rapified material files with `CfgConvert.exe` before showing them, so PboProject-packed `.rvmat` files preview as readable text.
+- Extraction now converts rapified material files back to readable text in place when the conversion option and `CfgConvert.exe` are configured.
+
+## 0.7.9 Beta
+
+- Added BI LZSS `Cprs` decompression for compressed PBO entries, including PboProject-packed `.rvmat` files.
+- Compressed entries can now be previewed and extracted in decompressed form instead of being treated as unsupported.
+- Skipped `texHeaders.bin` during `.bin` to `.cpp` conversion because it is not a config bin and CfgConvert errors on it.
+
+## 0.7.8 Beta
+
+- Removed the misleading generated baked config hints/model.cfg output from P3D inspection.
+- P3D inspection now focuses on defensible metadata only: format/version, ODOL resolution-array LODs, resources, proxies, RTMs, and related loose config entries when present.
+- P3D reports now point users to Mikero DeP3d/ExtractModelCfg for real model.cfg recovery from supported ODOL versions.
+
+## 0.7.7 Beta
+
+- Reworked P3D LOD reporting to use the ODOL resolution array when it can be read safely instead of categorizing random embedded strings.
+- Deprecated the earlier generated `model.cfg` experiment after it proved too noisy for real ODOL files.
+- This version is superseded by 0.7.8, which removes the baked config-hints UI entirely.
+
+## 0.7.6 Beta
+
+- P3D info now groups exposed LOD markers into practical categories such as visual, geometry/collision, view, fire/hit, memory, shadow, and crew/cargo.
+- Added an experimental baked-metadata model.cfg summary for selected `.p3d` files.
+- This experiment is superseded by 0.7.8 because string-scanned ODOL metadata is not reliable enough to present as recovered config.
+
+## 0.7.5 Beta
+
+- Added best-effort P3D metadata inspection from `View selected` for `.p3d` entries.
+- P3D info reports now show format/version, expected model.cfg class, related model.cfg/model.bin entries, exposed LOD markers, model.cfg/skeleton markers, textures, materials, proxies, RTMs, and likely named selections/bones.
+- P3D inspection reads metadata only and does not debinarize ODOL models.
+
+## 0.7.4 Beta
+
+- Replaced the flat inspector contents list with an expandable folder tree.
+- Added syntax highlighting for C/config-style preview files such as `.cpp`, `.c`, `.hpp`, `.rvmat`, `.sqf`, and converted `.bin` previews.
+- Folder rows can now be selected for extraction; extracting a selected folder extracts all files underneath it.
+- The inspector `.bin` conversion toggle now uses the same checkmark button style as the builder options.
+
+## 0.7.3 Beta
+
+- Replaced the redundant primary `Inspect` button with `View selected`.
+- Added `Reload PBO` for manually typed paths or refreshing a PBO after it changes on disk.
+- Pressing Enter in the PBO path field now reloads the PBO.
+
+## 0.7.2 Beta
+
+- Added Windows drag/drop support for dropping `.pbo` files directly into `RaG_PBO_Inspector.exe`.
+- Fixed the inspector drag/drop hook to avoid hard-closing the EXE when a file is dropped.
+- Switched inspector drag/drop to `tkinterdnd2` / `tkdnd` instead of a hand-rolled Win32 message hook.
+- Added a built-in read-only text viewer for configs, scripts, RVMATs, and other text-like PBO entries.
+- Double-clicking a PBO entry now opens the text viewer when the entry can be previewed.
+- Added optional extracted `.bin` to `.cpp` conversion using DayZ Tools `CfgConvert.exe`.
+- Inspector now saves the selected `CfgConvert.exe` path and conversion preference.
+- `pbo_core.py` now reports extracted file paths so post-extract tooling can process them.
+
 ## 0.7.0 Beta
 
 - Split PBO inspection/extraction into standalone `RaG_PBO_Inspector.exe`.

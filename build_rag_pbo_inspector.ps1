@@ -12,9 +12,15 @@ if (-not (Test-Path -LiteralPath $Icon)) {
     throw "Icon file not found: $Icon"
 }
 
+python -c "import PyInstaller, tkinterdnd2"
+if ($LASTEXITCODE -ne 0) {
+    throw "Missing build dependency. Run: python -m pip install -r requirements.txt"
+}
+
 python -m PyInstaller --clean --onefile --console `
     --icon "$Icon" `
     --add-data "$Icon;assets" `
+    --collect-all tkinterdnd2 `
     --name RaG_PBO_Inspector `
     "$Source"
 
