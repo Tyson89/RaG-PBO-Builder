@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 Beta
+
+- Added a separate PBO Inspector / Extractor window.
+- Added PBO header parsing with prefix, file count, size, timestamp, and packing method display.
+- Added selected-file and full-archive extraction for stored/uncompressed PBO entries.
+- Added safe extraction path checks to prevent absolute paths and parent-folder traversal.
+- Updated README documentation for the inspector/extractor.
+
 ## 0.6.10 Beta
 
 - Improved config `#include` resolution across local, addon, prefix, and project-root paths.

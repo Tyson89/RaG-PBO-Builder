@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.6.10 Beta  
+**Version:** 0.7.0 Beta  
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -35,6 +35,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Load Project Source and Build Output presets independently for faster project switching
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
 - Includes additional terrain and mapper-focused WRP checks
+- Inspect and extract existing `.pbo` archives from a separate tool window
 
 ---
 
@@ -96,6 +97,23 @@ Preset behavior:
 - Presets do not change signing, Binarize, CfgConvert, temp, exclude, private key, or preflight settings
 
 This keeps path switching convenient without accidentally changing important build settings.
+
+---
+
+## PBO Inspector / Extractor
+
+The `Inspector` button opens a separate window for existing `.pbo` archives.
+
+The inspector can:
+
+- Read the PBO header
+- Show packed file paths, sizes, timestamps, and packing methods
+- Show the detected PBO prefix
+- Extract selected files
+- Extract the full archive
+- Refuse unsafe extract paths that try to escape the selected output folder
+
+Only stored/uncompressed PBO entries are extracted. Compressed or unsupported entries are listed but not extracted.
 
 ---
 

@@ -37,7 +37,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.6.10 Beta"
+APP_VERSION = "0.7.0 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -101,6 +101,8 @@ GRAPHITE_ERROR_DARK = "#7f3434"
 ZERO = bytes([0])
 WIN_SEP = chr(92)
 COPY_CHUNK_SIZE = 1024 * 1024
+PBO_VERSION_MAGIC = 0x56657273
+PBO_STORED_METHOD = 0
 TEMP_MARKER_FILE = ".rag_pbo_builder_temp"
 BUILDER_TEMP_CHILDREN = {"addons", "preflight", "staging", "binarized", "configs", "_binarize_textures"}
 
@@ -1069,7 +1071,7 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
     files.sort(key=lambda item: item[0].lower())
     header = bytearray()
     header.extend(ZERO)
-    header.extend(struct.pack("<I", 0x56657273))
+    header.extend(struct.pack("<I", PBO_VERSION_MAGIC))
     header.extend(struct.pack("<IIII", 0, 0, 0, 0))
     if prefix:
         header.extend(b"prefix")
@@ -1112,6 +1114,237 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
                 pass
         raise
     log(f"Packed {len(files):4d} files / {total:,} bytes -> {output_path}")
+
+
+class PboArchiveEntry:
+    def __init__(self, name, packing_method, original_size, reserved, timestamp, data_size, offset=0):
+        self.name = name
+        self.packing_method = packing_method
+        self.original_size = original_size
+        self.reserved = reserved
+        self.timestamp = timestamp
+        self.data_size = data_size
+        self.offset = offset
+
+
+def read_pbo_cstring(file, max_length=8192):
+    data = bytearray()
+
+    while len(data) <= max_length:
+        chunk = file.read(1)
+
+        if not chunk:
+            raise BuildError("Unexpected end of file while reading PBO header string.")
+
+        if chunk == ZERO:
+            return data.decode("utf-8", errors="replace")
+
+        data.extend(chunk)
+
+    raise BuildError("PBO header string is too long or corrupt.")
+
+
+def read_pbo_header_fields(file):
+    raw = file.read(20)
+
+    if len(raw) != 20:
+        raise BuildError("Unexpected end of file while reading PBO header fields.")
+
+    return struct.unpack("<IIIII", raw)
+
+
+def read_pbo_properties(file):
+    properties = {}
+
+    while True:
+        key = read_pbo_cstring(file, 1024)
+
+        if not key:
+            break
+
+        properties[key] = read_pbo_cstring(file, 8192)
+
+    return properties
+
+
+def get_pbo_method_label(packing_method):
+    if packing_method == PBO_STORED_METHOD:
+        return "stored"
+
+    try:
+        raw_label = struct.pack("<I", packing_method).decode("ascii", errors="ignore").strip()
+    except Exception:
+        raw_label = ""
+
+    if raw_label and all(32 <= ord(char) <= 126 for char in raw_label):
+        return f"{raw_label} / 0x{packing_method:08X}"
+
+    return f"0x{packing_method:08X}"
+
+
+def format_pbo_timestamp(timestamp):
+    if not timestamp:
+        return ""
+
+    try:
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(timestamp)
+
+
+def read_pbo_archive(pbo_path):
+    if not pbo_path or not os.path.isfile(pbo_path):
+        raise BuildError(f"PBO file does not exist: {pbo_path}")
+
+    file_size = os.path.getsize(pbo_path)
+    entries = []
+    properties = {}
+
+    with open(pbo_path, "rb") as file:
+        first_name = read_pbo_cstring(file)
+        pending_name = None
+
+        if first_name:
+            pending_name = first_name
+        else:
+            fields = read_pbo_header_fields(file)
+
+            if fields[0] == PBO_VERSION_MAGIC:
+                properties = read_pbo_properties(file)
+            elif all(value == 0 for value in fields):
+                return {
+                    "path": pbo_path,
+                    "size": file_size,
+                    "properties": properties,
+                    "entries": entries,
+                    "data_start": file.tell(),
+                    "payload_end": file.tell(),
+                    "footer_size": max(0, file_size - file.tell()),
+                }
+            else:
+                raise BuildError(f"Unsupported or corrupt PBO header marker: 0x{fields[0]:08X}")
+
+        while True:
+            name = pending_name if pending_name is not None else read_pbo_cstring(file)
+            pending_name = None
+            packing_method, original_size, reserved, timestamp, data_size = read_pbo_header_fields(file)
+
+            if not name:
+                if all(value == 0 for value in [packing_method, original_size, reserved, timestamp, data_size]):
+                    data_start = file.tell()
+                    break
+
+                if packing_method == PBO_VERSION_MAGIC:
+                    properties.update(read_pbo_properties(file))
+                    continue
+
+                raise BuildError(f"Unsupported or corrupt PBO header entry: 0x{packing_method:08X}")
+
+            entries.append(PboArchiveEntry(name, packing_method, original_size, reserved, timestamp, data_size))
+
+        offset = data_start
+
+        for entry in entries:
+            entry.offset = offset
+            offset += entry.data_size
+
+        if offset > file_size:
+            raise BuildError("PBO header file sizes exceed archive length. The PBO may be corrupt.")
+
+    return {
+        "path": pbo_path,
+        "size": file_size,
+        "properties": properties,
+        "entries": entries,
+        "data_start": data_start,
+        "payload_end": offset,
+        "footer_size": max(0, file_size - offset),
+    }
+
+
+def get_safe_pbo_extract_path(output_dir, entry_name):
+    if not output_dir:
+        raise BuildError("Extract output folder is empty.")
+
+    if not entry_name or "\x00" in entry_name:
+        raise BuildError("PBO entry has an invalid empty or NUL-containing filename.")
+
+    raw = entry_name.replace("/", WIN_SEP)
+
+    if os.path.isabs(raw) or os.path.splitdrive(raw)[0]:
+        raise BuildError(f"Refusing to extract absolute PBO path: {entry_name}")
+
+    parts = []
+
+    for part in re.split(r"[\\/]+", raw):
+        if not part or part == ".":
+            continue
+
+        if part == ".." or ":" in part:
+            raise BuildError(f"Refusing unsafe PBO path: {entry_name}")
+
+        parts.append(part)
+
+    if not parts:
+        raise BuildError(f"Refusing empty PBO path after normalization: {entry_name}")
+
+    root = Path(output_dir).resolve(strict=False)
+    target = root.joinpath(*parts).resolve(strict=False)
+
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise BuildError(f"Refusing to extract outside output folder: {entry_name}")
+
+    return target
+
+
+def extract_pbo_files(pbo_path, output_dir, selected_names=None, log=None):
+    archive = read_pbo_archive(pbo_path)
+    selected = set(selected_names or [])
+    should_filter = bool(selected)
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    extracted = 0
+    total_bytes = 0
+
+    with open(pbo_path, "rb") as source:
+        for entry in archive["entries"]:
+            if should_filter and entry.name not in selected:
+                continue
+
+            if entry.packing_method != PBO_STORED_METHOD:
+                raise BuildError(f"Cannot extract compressed or unsupported PBO entry: {entry.name} ({get_pbo_method_label(entry.packing_method)})")
+
+            target = get_safe_pbo_extract_path(output_dir, entry.name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.seek(entry.offset)
+            remaining = entry.data_size
+
+            with open(target, "wb") as out:
+                while remaining > 0:
+                    chunk = source.read(min(COPY_CHUNK_SIZE, remaining))
+
+                    if not chunk:
+                        raise BuildError(f"Unexpected end of PBO data while extracting: {entry.name}")
+
+                    out.write(chunk)
+                    remaining -= len(chunk)
+
+            extracted += 1
+            total_bytes += entry.data_size
+
+            if log:
+                log(f"Extracted: {entry.name}")
+
+    if extracted == 0:
+        raise BuildError("No PBO entries were selected for extraction.")
+
+    return {
+        "files": extracted,
+        "bytes": total_bytes,
+        "output_dir": str(output_root),
+    }
 
 
 def get_safe_temp_name(name):
@@ -3430,6 +3663,254 @@ def build_all(settings, log, progress_callback):
     return summary
 
 
+class PboInspectorWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.archive = None
+        self.entries = []
+        self.pbo_path_var = tk.StringVar(value="")
+        self.output_dir_var = tk.StringVar(value="")
+        self.summary_var = tk.StringVar(value="No PBO loaded")
+
+        self.title("PBO Inspector / Extractor")
+        self.geometry("980x720")
+        self.minsize(820, 620)
+        self.configure(bg=GRAPHITE_BG)
+        self.transient(parent)
+        self._apply_tree_style()
+        self._build_ui()
+
+    def _apply_tree_style(self):
+        style = ttk.Style(self)
+        style.configure(
+            "Pbo.Treeview",
+            background=GRAPHITE_FIELD,
+            fieldbackground=GRAPHITE_FIELD,
+            foreground=GRAPHITE_TEXT,
+            bordercolor=GRAPHITE_BORDER,
+            rowheight=24,
+        )
+        style.configure(
+            "Pbo.Treeview.Heading",
+            background=GRAPHITE_CARD_SOFT,
+            foreground=GRAPHITE_TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.map("Pbo.Treeview", background=[("selected", GRAPHITE_ACCENT_DARK)], foreground=[("selected", "#ffffff")])
+
+    def _make_button(self, parent, text, command, primary=False):
+        if primary:
+            bg, fg, active_bg, hover_bg, weight = GRAPHITE_ACCENT_DARK, "#ffffff", GRAPHITE_ACCENT, GRAPHITE_ACCENT_HOVER, "bold"
+        else:
+            bg, fg, active_bg, hover_bg, weight = GRAPHITE_CARD_SOFT, GRAPHITE_TEXT, GRAPHITE_BORDER, GRAPHITE_BORDER, "normal"
+
+        button = tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=active_bg, activeforeground="#ffffff" if fg == "#ffffff" else GRAPHITE_TEXT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 9, weight), cursor="hand2")
+        button.pack(side="left", padx=(0, 8))
+        self.parent._attach_button_hover(button, bg, hover_bg, active_bg)
+        return button
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=16)
+        container.pack(fill="both", expand=True)
+
+        ttk.Label(container, text="PBO Inspector / Extractor", font=("Segoe UI", 17, "bold")).pack(anchor="w", pady=(0, 10))
+
+        path_frame = ttk.LabelFrame(container, text="Archive", padding=12)
+        path_frame.pack(fill="x", pady=(0, 10))
+        path_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(path_frame, text="PBO file", style="FieldName.TLabel").grid(row=0, column=0, sticky="w", pady=4)
+        pbo_entry = ttk.Entry(path_frame, textvariable=self.pbo_path_var)
+        pbo_entry.grid(row=0, column=1, sticky="ew", padx=(8, 8), pady=4)
+        ttk.Button(path_frame, text="Browse", command=self.choose_pbo).grid(row=0, column=2, sticky="e", pady=4)
+
+        ttk.Label(path_frame, text="Extract to", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        output_entry = ttk.Entry(path_frame, textvariable=self.output_dir_var)
+        output_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=4)
+        ttk.Button(path_frame, text="Browse", command=self.choose_output_dir).grid(row=1, column=2, sticky="e", pady=4)
+
+        action_frame = ttk.Frame(container)
+        action_frame.pack(fill="x", pady=(0, 10))
+        self.inspect_button = self._make_button(action_frame, "Inspect", self.inspect_pbo, primary=True)
+        self.extract_selected_button = self._make_button(action_frame, "Extract selected", self.extract_selected)
+        self.extract_all_button = self._make_button(action_frame, "Extract all", self.extract_all)
+        self.open_output_button = self._make_button(action_frame, "Open output", self.open_output_folder)
+        ttk.Label(action_frame, textvariable=self.summary_var, foreground=GRAPHITE_MUTED).pack(side="left", padx=(6, 0))
+
+        content_frame = ttk.LabelFrame(container, text="Contents", padding=10)
+        content_frame.pack(fill="both", expand=True, pady=(0, 10))
+        content_frame.columnconfigure(0, weight=1)
+        content_frame.rowconfigure(0, weight=1)
+
+        columns = ("path", "size", "method", "timestamp")
+        self.tree = ttk.Treeview(content_frame, columns=columns, show="headings", selectmode="extended", style="Pbo.Treeview")
+        self.tree.heading("path", text="Path")
+        self.tree.heading("size", text="Size")
+        self.tree.heading("method", text="Method")
+        self.tree.heading("timestamp", text="Timestamp")
+        self.tree.column("path", width=520, anchor="w")
+        self.tree.column("size", width=110, anchor="e")
+        self.tree.column("method", width=120, anchor="w")
+        self.tree.column("timestamp", width=150, anchor="w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+
+        tree_scroll = ttk.Scrollbar(content_frame, command=self.tree.yview)
+        tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+
+        log_frame = ttk.LabelFrame(container, text="Inspector log", padding=10)
+        log_frame.pack(fill="x")
+        self.log_text = tk.Text(log_frame, height=6, wrap="word", bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Consolas", 9))
+        self.log_text.pack(fill="both", expand=True)
+
+    def log(self, message):
+        self.log_text.insert("end", str(message) + chr(10))
+        self.log_text.see("end")
+
+    def get_default_output_dir(self):
+        pbo_path = self.pbo_path_var.get().strip()
+
+        if not pbo_path:
+            return ""
+
+        pbo = Path(pbo_path)
+        return str(pbo.with_name(pbo.stem + "_extracted"))
+
+    def choose_pbo(self):
+        path = filedialog.askopenfilename(title="Select PBO file", initialdir=get_initial_dir_from_value(self.pbo_path_var.get(), self.parent.output_root_var.get()), filetypes=[("PBO files", "*.pbo"), ("All files", "*.*")], parent=self)
+
+        if not path:
+            return
+
+        self.pbo_path_var.set(path)
+
+        if not self.output_dir_var.get().strip():
+            self.output_dir_var.set(self.get_default_output_dir())
+
+        self.inspect_pbo()
+
+    def choose_output_dir(self):
+        path = filedialog.askdirectory(title="Select extract output folder", initialdir=get_initial_dir_from_value(self.output_dir_var.get(), self.get_default_output_dir()), parent=self)
+
+        if path:
+            self.output_dir_var.set(path)
+
+    def inspect_pbo(self):
+        pbo_path = self.pbo_path_var.get().strip()
+
+        try:
+            archive = read_pbo_archive(pbo_path)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, str(e), parent=self)
+            return
+
+        self.archive = archive
+        self.entries = list(archive["entries"])
+        self.tree.delete(*self.tree.get_children())
+
+        total_bytes = sum(entry.data_size for entry in self.entries)
+        unsupported = 0
+
+        for index, entry in enumerate(self.entries):
+            if entry.packing_method != PBO_STORED_METHOD:
+                unsupported += 1
+
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(entry.name, format_byte_size(entry.data_size), get_pbo_method_label(entry.packing_method), format_pbo_timestamp(entry.timestamp)),
+            )
+
+        prefix = archive["properties"].get("prefix", "")
+        footer = archive.get("footer_size", 0)
+        unsupported_text = f", unsupported entries: {unsupported}" if unsupported else ""
+        self.summary_var.set(f"{len(self.entries)} file(s), {format_byte_size(total_bytes)}, prefix: {prefix or '<none>'}, footer: {format_byte_size(footer)}{unsupported_text}")
+        self.log(f"Loaded: {pbo_path}")
+        self.log(f"Files: {len(self.entries)}, payload: {format_byte_size(total_bytes)}, prefix: {prefix or '<none>'}")
+
+        if unsupported:
+            self.log(f"WARNING: {unsupported} compressed or unsupported entry/entries can be listed but not extracted.")
+
+    def confirm_output_folder(self, output_dir):
+        if os.path.isdir(output_dir):
+            try:
+                has_contents = any(Path(output_dir).iterdir())
+            except Exception:
+                has_contents = False
+
+            if has_contents:
+                return messagebox.askyesno(APP_TITLE, "Extract into a non-empty folder?\n\nExisting files with matching names will be overwritten.\n\n" + output_dir, parent=self)
+
+        return True
+
+    def extract_selected(self):
+        selected_items = self.tree.selection()
+
+        if not selected_items:
+            messagebox.showerror(APP_TITLE, "Select at least one PBO entry to extract.", parent=self)
+            return
+
+        selected_names = [self.entries[int(item)].name for item in selected_items]
+        self.extract_entries(selected_names)
+
+    def extract_all(self):
+        self.extract_entries(None)
+
+    def extract_entries(self, selected_names):
+        pbo_path = self.pbo_path_var.get().strip()
+        output_dir = self.output_dir_var.get().strip() or self.get_default_output_dir()
+
+        if output_dir:
+            self.output_dir_var.set(output_dir)
+
+        archive_path = self.archive.get("path", "") if self.archive else ""
+        archive_matches_path = bool(archive_path and pbo_path and os.path.normcase(os.path.abspath(archive_path)) == os.path.normcase(os.path.abspath(pbo_path)))
+
+        if not self.archive or not archive_matches_path:
+            self.inspect_pbo()
+
+            if not self.archive:
+                return
+
+        if not output_dir:
+            messagebox.showerror(APP_TITLE, "Select an extract output folder.", parent=self)
+            return
+
+        if not self.confirm_output_folder(output_dir):
+            return
+
+        try:
+            result = extract_pbo_files(pbo_path, output_dir, selected_names, self.log)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, str(e), parent=self)
+            return
+
+        self.log(f"Extracted {result['files']} file(s) / {format_byte_size(result['bytes'])} -> {result['output_dir']}")
+        messagebox.showinfo(APP_TITLE, f"Extracted {result['files']} file(s).", parent=self)
+
+    def open_output_folder(self):
+        output_dir = self.output_dir_var.get().strip() or self.get_default_output_dir()
+
+        if not output_dir:
+            messagebox.showerror(APP_TITLE, "Extract output folder is empty.", parent=self)
+            return
+
+        if not os.path.isdir(output_dir):
+            messagebox.showerror(APP_TITLE, f"Extract output folder does not exist: {output_dir}", parent=self)
+            return
+
+        try:
+            if os.name == "nt":
+                os.startfile(output_dir)
+            else:
+                subprocess.Popen(["xdg-open", output_dir])
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, str(e), parent=self)
+
+
 class RaGPboBuilderApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -3654,6 +4135,7 @@ class RaGPboBuilderApp(tk.Tk):
         right.pack(side="right", padx=(8, 14))
         self.about_button = self._make_header_button(right, "About", self.open_about_window)
         self.licence_button = self._make_header_button(right, "Licence", self.open_licence_window)
+        self.inspector_button = self._make_header_button(right, "Inspector", self.open_pbo_inspector_window)
         self.options_button = self._make_header_button(right, "Options", self.open_options_window)
 
         settings = ttk.LabelFrame(outer, text="Build settings", padding=10)
@@ -3984,6 +4466,9 @@ class RaGPboBuilderApp(tk.Tk):
 
     def delete_output_root_preset(self):
         self.delete_path_preset(self.output_root_var, "output_root_presets", self.output_root_preset_var, "Build Output")
+
+    def open_pbo_inspector_window(self):
+        PboInspectorWindow(self)
 
     def open_licence_window(self):
         window = tk.Toplevel(self)
