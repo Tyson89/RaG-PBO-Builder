@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.6.9 Beta  
+**Version:** 0.6.10 Beta  
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -550,6 +550,26 @@ The interface includes:
 - A `.biprivatekey` file, if signing is enabled
 
 Python is not required when using the compiled `.exe` version.
+
+---
+
+## Building From Source
+
+The source project keeps the icon in `assets/HEADONLY_SQUARE_2k.ico`.
+
+To build the executable, run this from the repository root:
+
+```powershell
+.\build_rag_pbo_builder.ps1
+```
+
+The generated executable is written to:
+
+```txt
+dist\RaG_PBO_Builder.exe
+```
+
+Generated `build`, `dist`, log, and release binary files are ignored by Git. Put public binaries in GitHub Releases instead of committing them to the source tree.
 
 ---
 

@@ -37,7 +37,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.6.9 Beta"
+APP_VERSION = "0.6.10 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -65,7 +65,7 @@ Important:
 Never share your .biprivatekey.
 Only distribute the matching .bikey.
 """
-APP_ICON_FILE = "HEADONLY_SQUARE_2k.ico"
+APP_ICON_FILE = os.path.join("assets", "HEADONLY_SQUARE_2k.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
@@ -1004,12 +1004,13 @@ def clear_temp_folder(temp_root, log, source_root="", output_root=""):
             raise BuildError(f"Refusing to delete path outside temp root: {resolved}")
         if resolved == root_path:
             raise BuildError(f"Refusing to delete temp root itself: {resolved}")
-        if child.is_dir():
+        was_dir = child.is_dir()
+        if was_dir:
             shutil.rmtree(child)
         else:
             child.unlink()
         removed += 1
-        log(f"Removed temp {'folder' if child.is_dir() else 'file'}: {child}")
+        log(f"Removed temp {'folder' if was_dir else 'file'}: {child}")
     if removed == 0:
         log("No known builder temp folders found to remove.")
     log("Safe temp cleanup finished.")
@@ -1523,11 +1524,11 @@ def report_reference_status(reference, source_file, addon_source_dir, project_ro
             result.error(log, f"Referenced file exists but is excluded from the packed PBO in {source_location}: {ref} -> {rel_resolved}")
 
 
-def collect_config_cpp_files(source_dir):
+def collect_config_cpp_files(source_dir, extra_patterns=None):
     configs = []
 
     for root, dirs, files in os.walk(source_dir):
-        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory)]
+        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
 
         for file in files:
             if file.lower() == "config.cpp":
@@ -1771,7 +1772,55 @@ def resolve_script_module_path(path_value, addon_source_dir, project_root, prefi
     return candidates[0] if candidates else raw, False
 
 
-def read_config_with_local_includes(config_cpp, seen=None):
+def resolve_config_include_path(include_value, config_cpp, addon_source_dir="", project_root=""):
+    raw = normalize_reference_path(include_value).strip(WIN_SEP)
+
+    if not raw:
+        return ""
+
+    include_os = raw.replace(WIN_SEP, os.sep)
+    config_dir = Path(config_cpp).parent
+    candidates = [config_dir / include_os]
+
+    if addon_source_dir:
+        addon_source_dir = os.path.normpath(addon_source_dir)
+        addon_parent = os.path.dirname(addon_source_dir)
+        addon_folder = os.path.basename(addon_source_dir)
+        explicit_prefix = get_explicit_pbo_prefix(addon_source_dir)
+        prefix_first = explicit_prefix.split(WIN_SEP)[0] if explicit_prefix else ""
+        parts = [part for part in raw.split(WIN_SEP) if part]
+
+        candidates.append(Path(addon_source_dir) / include_os)
+        candidates.append(Path(addon_parent) / include_os)
+
+        if len(parts) > 1 and parts[0].lower() in {addon_folder.lower(), prefix_first.lower()}:
+            candidates.append(Path(addon_source_dir).joinpath(*parts[1:]))
+
+    if project_root:
+        candidates.append(Path(normalize_working_dir(project_root)) / include_os)
+
+    seen = set()
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception:
+            resolved = candidate
+
+        key = os.path.normcase(str(resolved))
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        if resolved.is_file():
+            return str(resolved)
+
+    return ""
+
+
+def read_config_with_local_includes(config_cpp, seen=None, addon_source_dir="", project_root=""):
     if seen is None:
         seen = set()
 
@@ -1793,22 +1842,20 @@ def read_config_with_local_includes(config_cpp, seen=None):
         return ""
 
     include_pattern = re.compile(r"^\s*#include\s+[\"<]([^\">]+)[\">]", re.IGNORECASE | re.MULTILINE)
-    config_dir = Path(config_cpp).parent
 
     def replace_include(match):
-        include_value = match.group(1).strip().replace("/", os.sep).replace(WIN_SEP, os.sep)
-        include_path = config_dir / include_value
+        include_path = resolve_config_include_path(match.group(1).strip(), config_cpp, addon_source_dir, project_root)
 
-        if include_path.is_file():
-            return read_config_with_local_includes(str(include_path), seen)
+        if include_path:
+            return read_config_with_local_includes(include_path, seen, addon_source_dir, project_root)
 
         return match.group(0)
 
     return include_pattern.sub(replace_include, content)
 
 
-def config_file_mentions_class(config_cpp, class_name):
-    content = read_config_with_local_includes(config_cpp)
+def config_file_mentions_class(config_cpp, class_name, addon_source_dir="", project_root=""):
+    content = read_config_with_local_includes(config_cpp, None, addon_source_dir, project_root)
 
     if not content:
         return False
@@ -1819,8 +1866,8 @@ def config_file_mentions_class(config_cpp, class_name):
     return bool(pattern.search(clean))
 
 
-def config_file_has_class(config_cpp, class_name):
-    content = read_config_with_local_includes(config_cpp)
+def config_file_has_class(config_cpp, class_name, addon_source_dir="", project_root=""):
+    content = read_config_with_local_includes(config_cpp, None, addon_source_dir, project_root)
 
     if not content:
         return False
@@ -1830,19 +1877,19 @@ def config_file_has_class(config_cpp, class_name):
     if find_class_body(clean, class_name):
         return True
 
-    return config_file_mentions_class(config_cpp, class_name)
+    return config_file_mentions_class(config_cpp, class_name, addon_source_dir, project_root)
 
 
-def find_config_cpp_with_class(config_files, class_name):
+def find_config_cpp_with_class(config_files, class_name, addon_source_dir="", project_root=""):
     for config_cpp in config_files:
-        if config_file_has_class(config_cpp, class_name):
+        if config_file_has_class(config_cpp, class_name, addon_source_dir, project_root):
             return config_cpp
 
     return ""
 
 
 def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_root, result, log):
-    content = read_config_with_local_includes(config_cpp)
+    content = read_config_with_local_includes(config_cpp, None, addon_source_dir, project_root)
 
     if not content:
         result.warning(log, f"Could not read config.cpp for CfgMods check: {config_cpp}")
@@ -2085,14 +2132,14 @@ def preflight_scan_invalid_paths(addon_source_dir, extra_patterns, result, log):
                 result.warning(log, f"Path is very long and may cause tool issues: {rel}")
 
 
-def verify_pack_source_before_packing(original_source_dir, pack_source, convert_config, log):
+def verify_pack_source_before_packing(original_source_dir, pack_source, convert_config, log, extra_patterns=None):
     if not os.path.isdir(pack_source):
         raise BuildError(f"Pack source does not exist before verification: {pack_source}")
 
     if not convert_config:
         return
 
-    original_configs = collect_config_cpp_files(original_source_dir)
+    original_configs = collect_config_cpp_files(original_source_dir, extra_patterns)
 
     if not original_configs:
         return
@@ -2265,8 +2312,23 @@ def get_detected_pbo_prefix_for_preflight(addon_source_dir):
     return normalize_reference_path(folder_name).strip(WIN_SEP)
 
 
-def iter_config_file_contents(config_files):
-    for config_cpp in config_files:
+def iter_config_file_contents(config_files, addon_source_dir="", project_root="", include_resolved=False):
+    seen = set()
+    include_pattern = re.compile(r"^\s*#include\s+[\"<]([^\">]+)[\">]", re.IGNORECASE | re.MULTILINE)
+
+    def visit(config_cpp):
+        try:
+            path = Path(config_cpp).resolve(strict=False)
+        except Exception:
+            path = Path(config_cpp)
+
+        key = os.path.normcase(str(path))
+
+        if key in seen:
+            return
+
+        seen.add(key)
+
         try:
             content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
         except Exception:
@@ -2274,12 +2336,24 @@ def iter_config_file_contents(config_files):
 
         yield config_cpp, content
 
+        if not include_resolved or not content:
+            return
 
-def find_worldname_references(config_files):
+        for match in include_pattern.finditer(content):
+            include_path = resolve_config_include_path(match.group(1).strip(), config_cpp, addon_source_dir, project_root)
+
+            if include_path:
+                yield from visit(include_path)
+
+    for config_cpp in config_files:
+        yield from visit(config_cpp)
+
+
+def find_worldname_references(config_files, addon_source_dir="", project_root=""):
     pattern = re.compile(r"\bworldName\s*=\s*[\"']([^\"']+\.wrp)[\"']\s*;", re.IGNORECASE)
     results = []
 
-    for config_cpp, content in iter_config_file_contents(config_files):
+    for config_cpp, content in iter_config_file_contents(config_files, addon_source_dir, project_root, True):
         if not content:
             continue
 
@@ -2289,14 +2363,14 @@ def find_worldname_references(config_files):
     return results
 
 
-def find_terrain_shape_references(config_files):
+def find_terrain_shape_references(config_files, addon_source_dir="", project_root=""):
     # Terrain configs commonly use newRoadsShape = "...roads.shp";
     # The broader regex catches explicit quoted shape references as well.
     shape_regex = re.compile(r"[\"']([^\"']+\.(?:shp|dbf|shx|prj))[\"']", re.IGNORECASE)
     results = []
     seen = set()
 
-    for config_cpp, content in iter_config_file_contents(config_files):
+    for config_cpp, content in iter_config_file_contents(config_files, addon_source_dir, project_root, True):
         if not content:
             continue
 
@@ -2335,9 +2409,9 @@ def check_shape_sidecars(shape_path, addon_source_dir, result, log):
             result.warning(log, f"Road shape sidecar is missing for {rel_shape}: {os.path.basename(sidecar)}")
 
 
-def config_contains_class(config_files, class_name):
+def config_contains_class(config_files, class_name, addon_source_dir="", project_root=""):
     for config_cpp in config_files:
-        if config_file_has_class(config_cpp, class_name):
+        if config_file_has_class(config_cpp, class_name, addon_source_dir, project_root):
             return True
 
     return False
@@ -2749,8 +2823,8 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
         if not config_files:
             result.error(log, f"WRP found but no config.cpp exists in terrain addon: {addon_name}")
         else:
-            has_cfgworlds = config_contains_class(config_files, "CfgWorlds")
-            has_cfgworldlist = config_contains_class(config_files, "CfgWorldList") or config_contains_class(config_files, "CfgWorldsList")
+            has_cfgworlds = config_contains_class(config_files, "CfgWorlds", addon_source_dir, project_root)
+            has_cfgworldlist = config_contains_class(config_files, "CfgWorldList", addon_source_dir, project_root) or config_contains_class(config_files, "CfgWorldsList", addon_source_dir, project_root)
 
             if not has_cfgworlds:
                 result.error(log, f"WRP found but no CfgWorlds class found in addon configs: {addon_name}")
@@ -2758,7 +2832,7 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
             if not has_cfgworldlist:
                 result.warning(log, f"WRP found but no CfgWorldList class found in addon configs: {addon_name}")
 
-            worldname_refs = find_worldname_references(config_files)
+            worldname_refs = find_worldname_references(config_files, addon_source_dir, project_root)
 
             if not worldname_refs:
                 result.warning(log, f"WRP found but no worldName .wrp path was found in addon configs: {addon_name}")
@@ -2840,7 +2914,7 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
                 result.warning(log, f"Navmesh folder contains files, but all navmesh files appear to be excluded from the packed PBO: {addon_name}")
 
     if checks.get("terrain_road_shapes", True):
-        shape_refs = find_terrain_shape_references(config_files)
+        shape_refs = find_terrain_shape_references(config_files, addon_source_dir, project_root)
 
         if shape_refs:
             for config_cpp, shape_ref, line_number in shape_refs:
@@ -3024,7 +3098,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
         else:
             result.note(log, "Texture freshness check disabled.")
 
-        configs = collect_config_cpp_files(addon_source_dir)
+        configs = collect_config_cpp_files(addon_source_dir, extra_patterns)
         root_config_cpp = os.path.normcase(os.path.abspath(os.path.join(addon_source_dir, "config.cpp")))
 
         if configs:
@@ -3039,7 +3113,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
             # and others keep it in a nested scripts\config.cpp.
             # Do not warn per nested config; validate the config that actually contains or includes CfgMods,
             # or warn once if none exists anywhere in the addon configs.
-            cfgmods_config_cpp = find_config_cpp_with_class(configs, "CfgMods")
+            cfgmods_config_cpp = find_config_cpp_with_class(configs, "CfgMods", addon_source_dir, project_root)
             cfgmods_check_cpp = cfgmods_config_cpp or os.path.join(addon_source_dir, "config.cpp")
 
             if not os.path.isfile(cfgmods_check_cpp):
@@ -3311,7 +3385,7 @@ def build_all(settings, log, progress_callback):
             if convert_config:
                 ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
                 run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
-            verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log)
+            verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log, exclude_pattern_list)
             log(f"PBO Name:   {os.path.basename(job['output_pbo'])}")
             log(f"PBO prefix: {job['prefix']}")
             pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclude_pattern_list)
@@ -4193,17 +4267,18 @@ class RaGPboBuilderApp(tk.Tk):
             "selected_addons": self.get_selected_addon_names() if hasattr(self, "addon_listbox") else [],
             "window_geometry": self.geometry() if is_safe_window_geometry(self.geometry()) else self.saved_settings.get("window_geometry", ""),
         }
+        self.saved_settings = data
         save_saved_settings(data)
 
     def choose_source_root(self):
-        path = filedialog.askdirectory(title="Select source root", initialdir=get_initial_dir_from_value(self.source_root_var.get(), self.output_root_var.get()))
+        path = filedialog.askdirectory(title="Select Project Source", initialdir=get_initial_dir_from_value(self.source_root_var.get(), self.output_root_var.get()))
         if path:
             self.source_root_var.set(path)
             self.refresh_addon_list(select_all_default=True)
             self.save_path_settings()
 
     def choose_output_root(self):
-        path = filedialog.askdirectory(title="Select output root folder", initialdir=get_initial_dir_from_value(self.output_root_var.get(), self.source_root_var.get()))
+        path = filedialog.askdirectory(title="Select Build Output folder", initialdir=get_initial_dir_from_value(self.output_root_var.get(), self.source_root_var.get()))
         if path:
             self.output_root_var.set(path)
             self.refresh_addon_list(select_all_default=True)
@@ -4722,7 +4797,7 @@ class RaGPboBuilderApp(tk.Tk):
         elif key in cache:
             del cache[key]
         save_build_cache(cache)
-        messagebox.showinfo(APP_TITLE, f"Cleared {cleared} cache entrie(s).")
+        messagebox.showinfo(APP_TITLE, f"Cleared {cleared} cache entry/entries.")
 
 
 if __name__ == "__main__":
