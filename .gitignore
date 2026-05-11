@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 *.spec
+*.exe
 
 # Logs and local app output
 *.log
@@ -18,5 +19,6 @@ dist/
 Thumbs.db
 desktop.ini
 
-# Release binaries are kept outside Git by default.
+# Release binaries are uploaded to GitHub Releases, not committed.
+releases/*
 !releases/.gitkeep

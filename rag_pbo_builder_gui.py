@@ -37,7 +37,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.10 Beta"
+APP_VERSION = "0.7.12 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -123,6 +123,7 @@ P3D_INTERNAL_REFERENCE_REGEX = re.compile(
 PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset")
 RISKY_REFERENCE_EXTENSIONS = {".paa", ".rvmat", ".p3d", ".wss", ".ogg", ".wav", ".emat", ".edds", ".ptc", ".bisurf"}
 SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga", ".psd"}
+PAA_SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga"}
 SCRIPT_MODULE_FOLDERS = {
     "engineScriptModule": "scripts/1_Core",
     "gamelibScriptModule": "scripts/2_GameLib",
@@ -642,6 +643,12 @@ def find_cfgconvert():
     pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
     pf = os.environ.get("ProgramFiles", "C:/Program Files")
     return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"])
+
+
+def find_imagetopaa():
+    pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
+    pf = os.environ.get("ProgramFiles", "C:/Program Files")
+    return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/ImageToPAA/ImageToPAA.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/ImageToPAA/ImageToPAA.exe"])
 
 
 def find_dssignfile():
@@ -1194,8 +1201,10 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
         "project_root": settings["project_root"],
         "exclude_patterns": settings["exclude_patterns"],
         "max_processes": settings["max_processes"],
+        "update_paa_from_sources": bool(settings.get("update_paa_from_sources", False)),
         "binarize_exe": file_fingerprint(settings.get("binarize_exe", ""), True, build_hash_cache),
         "cfgconvert_exe": file_fingerprint(settings.get("cfgconvert_exe", ""), True, build_hash_cache),
+        "imagetopaa_exe": file_fingerprint(settings.get("imagetopaa_exe", ""), True, build_hash_cache),
         "dssignfile_exe": file_fingerprint(settings.get("dssignfile_exe", ""), True, build_hash_cache),
     }
     private_key = settings.get("private_key", "")
@@ -1205,8 +1214,12 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
     for root, dirs, filenames in os.walk(source_dir):
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for fname in sorted(filenames, key=lambda value: value.lower()):
-            if should_skip_file(fname, extra_patterns):
+            ext = os.path.splitext(fname)[1].lower()
+            is_paa_source = bool(settings.get("update_paa_from_sources", False)) and ext in PAA_SOURCE_TEXTURE_EXTENSIONS
+
+            if should_skip_file(fname, extra_patterns) and not is_paa_source:
                 continue
+
             full = os.path.join(root, fname)
             rel = os.path.relpath(full, source_dir).replace(os.sep, WIN_SEP).lower()
             try:
@@ -2110,7 +2123,7 @@ def preflight_scan_invalid_paths(addon_source_dir, extra_patterns, result, log):
     for root, dirs, files in os.walk(addon_source_dir):
         dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
 
-        for name in list(dirs) + list(files):
+        for name in list(dirs) + [file for file in files if not should_skip_file(file, extra_patterns)]:
             full = os.path.join(root, name)
             rel = os.path.relpath(full, addon_source_dir).replace(os.sep, WIN_SEP)
             result.checked_paths += 1
@@ -3142,6 +3155,9 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
             dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
 
             for file in files:
+                if should_skip_file(file, extra_patterns):
+                    continue
+
                 full = os.path.join(root, file)
                 ext = os.path.splitext(file)[1].lower()
 
@@ -3248,6 +3264,117 @@ def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log, extra_patterns=None)
         log(f"Removed source config.cpp from staging: {rel_config}")
 
 
+def collect_paa_update_jobs(source_dir, staging_dir, extra_patterns=None):
+    jobs_by_target = {}
+
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
+
+        for file in files:
+            source_ext = os.path.splitext(file)[1].lower()
+
+            if source_ext not in PAA_SOURCE_TEXTURE_EXTENSIONS:
+                continue
+
+            source_file = os.path.join(root, file)
+            rel_source = os.path.relpath(source_file, source_dir)
+            rel_paa = os.path.splitext(rel_source)[0] + ".paa"
+            target_paa = os.path.join(staging_dir, rel_paa)
+
+            try:
+                source_mtime = os.path.getmtime(source_file)
+            except OSError:
+                continue
+
+            key = rel_paa.replace(os.sep, WIN_SEP).lower()
+            existing = jobs_by_target.get(key)
+
+            if existing and existing["source_mtime"] >= source_mtime:
+                continue
+
+            jobs_by_target[key] = {
+                "source": source_file,
+                "target": target_paa,
+                "rel_source": rel_source.replace(os.sep, WIN_SEP),
+                "rel_paa": rel_paa.replace(os.sep, WIN_SEP),
+                "source_mtime": source_mtime,
+            }
+
+    jobs = []
+
+    for job in jobs_by_target.values():
+        target_paa = job["target"]
+
+        if os.path.isfile(target_paa):
+            try:
+                if job["source_mtime"] <= os.path.getmtime(target_paa):
+                    continue
+            except OSError:
+                pass
+
+        jobs.append(job)
+
+    jobs.sort(key=lambda item: item["rel_paa"].lower())
+    return jobs
+
+
+def run_imagetopaa_to_paa(imagetopaa_exe, source_file, target_paa, log):
+    if not imagetopaa_exe or not os.path.isfile(imagetopaa_exe):
+        raise BuildError("ImageToPAA.exe not found. Select the DayZ Tools ImageToPAA.exe path.")
+
+    if not os.path.isfile(source_file):
+        raise BuildError(f"Source texture does not exist: {source_file}")
+
+    target_dir = os.path.dirname(target_paa)
+    os.makedirs(target_dir, exist_ok=True)
+    temp_paa = os.path.join(target_dir, f".{os.path.splitext(os.path.basename(target_paa))[0]}.{os.getpid()}_{time.time_ns()}.tmp.paa")
+
+    if os.path.isfile(temp_paa):
+        os.remove(temp_paa)
+
+    cmd = [imagetopaa_exe, source_file, temp_paa]
+    result = subprocess.run(cmd, cwd=os.path.dirname(source_file), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=get_subprocess_creationflags(), startupinfo=get_hidden_startupinfo())
+    output = result.stdout or ""
+
+    if output:
+        for line in output.splitlines():
+            log(line)
+
+    if result.returncode != 0 or not os.path.isfile(temp_paa):
+        if os.path.isfile(temp_paa):
+            try:
+                os.remove(temp_paa)
+            except OSError:
+                pass
+        raise BuildError(f"ImageToPAA failed with exit code {result.returncode}: {source_file}")
+
+    os.replace(temp_paa, target_paa)
+
+
+def update_staging_paa_from_source_textures(source_dir, staging_dir, imagetopaa_exe, log, extra_patterns=None):
+    if not os.path.isdir(staging_dir):
+        raise BuildError(f"Staging folder does not exist for PAA update: {staging_dir}")
+
+    jobs = collect_paa_update_jobs(source_dir, staging_dir, extra_patterns)
+
+    if not jobs:
+        log("No stale or missing .paa files found for source textures.")
+        return 0
+
+    log("")
+    log(f"Updating {len(jobs)} .paa file(s) from newer/missing source textures:")
+
+    converted = 0
+
+    for job in jobs:
+        log(f"Converting: {job['rel_source']} -> {job['rel_paa']}")
+        run_imagetopaa_to_paa(imagetopaa_exe, job["source"], job["target"], log)
+        converted += 1
+
+    log(f"Updated {converted} .paa file(s) in staging.")
+    return converted
+
+
 def build_all(settings, log, progress_callback):
     start = time.time()
     source_root = os.path.normpath(settings["source_root"])
@@ -3264,8 +3391,10 @@ def build_all(settings, log, progress_callback):
     use_binarize = settings["use_binarize"]
     convert_config = settings["convert_config"]
     sign_pbos = settings["sign_pbos"]
+    update_paa_from_sources = bool(settings.get("update_paa_from_sources", False))
     binarize_exe = settings["binarize_exe"]
     cfgconvert_exe = settings["cfgconvert_exe"]
+    imagetopaa_exe = settings.get("imagetopaa_exe", "")
     dssignfile_exe = settings["dssignfile_exe"]
     private_key = settings["private_key"]
     exclude_patterns = settings["exclude_patterns"]
@@ -3299,6 +3428,10 @@ def build_all(settings, log, progress_callback):
         if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
             raise BuildError("CfgConvert.exe not found. Select the DayZ Tools CfgConvert.exe path.")
         log(f"Using CfgConvert.exe: {cfgconvert_exe}")
+    if update_paa_from_sources:
+        if not imagetopaa_exe or not os.path.isfile(imagetopaa_exe):
+            raise BuildError("ImageToPAA.exe not found. Select the DayZ Tools ImageToPAA.exe path or disable Update PAA.")
+        log(f"Using ImageToPAA.exe: {imagetopaa_exe}")
     if sign_pbos:
         if not dssignfile_exe or not os.path.isfile(dssignfile_exe):
             raise BuildError("DSSignFile.exe not found. Select the DayZ Tools DSSignFile.exe path.")
@@ -3324,7 +3457,7 @@ def build_all(settings, log, progress_callback):
     build_hash_cache = {}
     cache_key_root = os.path.abspath(source_root).lower()
     source_cache = cache.setdefault(cache_key_root, {})
-    summary = {"built": 0, "skipped": 0, "signed": 0, "failed": 0, "keys_copied": 0, "p3d_fallbacks": 0, "targets": len(targets), "log_file": settings.get("log_file", "")}
+    summary = {"built": 0, "skipped": 0, "signed": 0, "failed": 0, "keys_copied": 0, "p3d_fallbacks": 0, "paa_updates": 0, "targets": len(targets), "log_file": settings.get("log_file", "")}
     jobs = []
 
     if force_rebuild:
@@ -3353,7 +3486,7 @@ def build_all(settings, log, progress_callback):
                     shutil.rmtree(path)
                     log(f"Force rebuild: removed selected addon temp folder only: {path}")
         folder_has_p3d = use_binarize and has_p3d_files(folder_path, exclude_pattern_list)
-        needs_staging = convert_config or folder_has_p3d
+        needs_staging = convert_config or folder_has_p3d or update_paa_from_sources
         pack_source = folder_path
         staging_dir = ""
         binarized_dir = ""
@@ -3376,6 +3509,8 @@ def build_all(settings, log, progress_callback):
         log(f"Packing addon {build_index}/{len(jobs)}: {job['folder_name']}")
         log("=" * 80)
         try:
+            if update_paa_from_sources:
+                summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclude_pattern_list)
             if use_binarize and job["folder_has_p3d"]:
                 log("Running Binarize against filtered staging folder...")
                 run_dayz_binarize(job["binarize_source"], job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"])
@@ -3421,6 +3556,7 @@ def build_all(settings, log, progress_callback):
     log(f"Signed:        {summary['signed']}")
     log(f"Keys copied:   {summary['keys_copied']}")
     log(f"P3D fallbacks: {summary['p3d_fallbacks']}")
+    log(f"PAA updates:   {summary['paa_updates']}")
     log(f"Failed:        {summary['failed']}")
     log(f"Time:          {format_duration(elapsed)}")
     if settings.get("log_file"):
@@ -3460,12 +3596,14 @@ class RaGPboBuilderApp(tk.Tk):
         self.pbo_name_var = tk.StringVar(value=self.saved_settings.get("pbo_name", self.saved_settings.get("prefix_root", "")))
         self.use_binarize_var = tk.BooleanVar(value=self.saved_settings.get("use_binarize", True))
         self.convert_config_var = tk.BooleanVar(value=self.saved_settings.get("convert_config", True))
+        self.update_paa_from_sources_var = tk.BooleanVar(value=self.saved_settings.get("update_paa_from_sources", False))
         self.sign_pbos_var = tk.BooleanVar(value=self.saved_settings.get("sign_pbos", True))
         self.force_rebuild_var = tk.BooleanVar(value=self.saved_settings.get("force_rebuild", False))
         self.preflight_before_build_var = tk.BooleanVar(value=self.saved_settings.get("preflight_before_build", False))
         self.max_processes_var = tk.IntVar(value=self.saved_settings.get("max_processes", get_default_max_processes()))
         self.binarize_exe_var = tk.StringVar(value=self.saved_settings.get("binarize_exe", find_dayz_binarize()))
         self.cfgconvert_exe_var = tk.StringVar(value=self.saved_settings.get("cfgconvert_exe", find_cfgconvert()))
+        self.imagetopaa_exe_var = tk.StringVar(value=self.saved_settings.get("imagetopaa_exe", find_imagetopaa()))
         self.dssignfile_exe_var = tk.StringVar(value=self.saved_settings.get("dssignfile_exe", find_dssignfile()))
         self.private_key_var = tk.StringVar(value=self.saved_settings.get("private_key", ""))
         self.project_root_var = tk.StringVar(value=self.saved_settings.get("project_root", DEFAULT_PROJECT_ROOT))
@@ -3681,6 +3819,7 @@ class RaGPboBuilderApp(tk.Tk):
         self._add_checkbutton(options, "Binarize P3D", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D files.")
         self._add_checkbutton(options, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
         self._add_checkbutton(options, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
+        self._add_checkbutton(options, "Update PAA", self.update_paa_from_sources_var, 0, 4, "Use ImageToPAA.exe to update missing or stale staged .paa files from newer .png/.tga source textures. Source files are not overwritten.")
         ttk.Label(options, text="Safety", style="FieldMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         self._add_checkbutton(options, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
         self._add_checkbutton(options, "Preflight before build", self.preflight_before_build_var, 1, 2, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.", columnspan=2)
@@ -4052,15 +4191,16 @@ class RaGPboBuilderApp(tk.Tk):
         frame.columnconfigure(1, weight=1)
         self._add_file_row(frame, 0, "binarize.exe", self.binarize_exe_var, self.choose_binarize_exe, "Path to DayZ Tools binarize.exe.")
         self._add_file_row(frame, 1, "CfgConvert.exe", self.cfgconvert_exe_var, self.choose_cfgconvert_exe, "Path to DayZ Tools CfgConvert.exe.")
-        self._add_file_row(frame, 2, "DSSignFile.exe", self.dssignfile_exe_var, self.choose_dssignfile_exe, "Path to DayZ Tools DSSignFile.exe.")
-        self._add_file_row(frame, 3, "Private key", self.private_key_var, self.choose_private_key, "Your .biprivatekey. Never distribute this file.")
-        self._add_folder_row(frame, 4, "Project root", self.project_root_var, self.choose_project_root, "Usually P: or your DayZ project drive root.")
-        self._add_folder_row(frame, 5, "Temp dir", self.temp_dir_var, self.choose_temp_dir, "Temporary staging folder.")
-        ttk.Label(frame, text="Exclude patterns").grid(row=6, column=0, sticky="nw", pady=5)
+        self._add_file_row(frame, 2, "ImageToPAA.exe", self.imagetopaa_exe_var, self.choose_imagetopaa_exe, "Path to DayZ Tools ImageToPAA.exe.")
+        self._add_file_row(frame, 3, "DSSignFile.exe", self.dssignfile_exe_var, self.choose_dssignfile_exe, "Path to DayZ Tools DSSignFile.exe.")
+        self._add_file_row(frame, 4, "Private key", self.private_key_var, self.choose_private_key, "Your .biprivatekey. Never distribute this file.")
+        self._add_folder_row(frame, 5, "Project root", self.project_root_var, self.choose_project_root, "Usually P: or your DayZ project drive root.")
+        self._add_folder_row(frame, 6, "Temp dir", self.temp_dir_var, self.choose_temp_dir, "Temporary staging folder.")
+        ttk.Label(frame, text="Exclude patterns").grid(row=7, column=0, sticky="nw", pady=5)
         exclude_entry = tk.Text(frame, height=5, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
-        exclude_entry.grid(row=6, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
+        exclude_entry.grid(row=7, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
         exclude_entry.insert("1.0", self.exclude_patterns_var.get())
-        frame.rowconfigure(6, weight=1)
+        frame.rowconfigure(7, weight=1)
 
         preflight_frame = ttk.LabelFrame(container, text="Preflight checks", padding=14)
         preflight_frame.pack(fill="x", pady=(12, 0))
@@ -4240,12 +4380,14 @@ class RaGPboBuilderApp(tk.Tk):
             "pbo_name": self.pbo_name_var.get().strip(),
             "use_binarize": bool(self.use_binarize_var.get()),
             "convert_config": bool(self.convert_config_var.get()),
+            "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
             "sign_pbos": bool(self.sign_pbos_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
             "max_processes": max_processes,
             "binarize_exe": self.binarize_exe_var.get().strip(),
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
+            "imagetopaa_exe": self.imagetopaa_exe_var.get().strip(),
             "dssignfile_exe": self.dssignfile_exe_var.get().strip(),
             "private_key": self.private_key_var.get().strip(),
             "project_root": self.project_root_var.get().strip(),
@@ -4309,6 +4451,12 @@ class RaGPboBuilderApp(tk.Tk):
         path = filedialog.askopenfilename(title="Select CfgConvert.exe", initialdir=get_initial_dir_from_value(self.cfgconvert_exe_var.get(), self.project_root_var.get()), filetypes=[("CfgConvert.exe", "CfgConvert.exe"), ("Executable", "*.exe"), ("All files", "*.*")])
         if path:
             self.cfgconvert_exe_var.set(path)
+            self.save_path_settings()
+
+    def choose_imagetopaa_exe(self):
+        path = filedialog.askopenfilename(title="Select ImageToPAA.exe", initialdir=get_initial_dir_from_value(self.imagetopaa_exe_var.get(), self.project_root_var.get()), filetypes=[("ImageToPAA.exe", "ImageToPAA.exe"), ("Executable", "*.exe"), ("All files", "*.*")])
+        if path:
+            self.imagetopaa_exe_var.set(path)
             self.save_path_settings()
 
     def choose_dssignfile_exe(self):
@@ -4386,6 +4534,12 @@ class RaGPboBuilderApp(tk.Tk):
                 raise BuildError("Select CfgConvert.exe or disable CPP to BIN.")
             if not os.path.isfile(path):
                 raise BuildError(f"CfgConvert.exe does not exist: {path}")
+        if self.update_paa_from_sources_var.get():
+            path = self.imagetopaa_exe_var.get().strip()
+            if not path:
+                raise BuildError("Select ImageToPAA.exe or disable Update PAA.")
+            if not os.path.isfile(path):
+                raise BuildError(f"ImageToPAA.exe does not exist: {path}")
         if self.sign_pbos_var.get():
             sign = self.dssignfile_exe_var.get().strip()
             key = self.private_key_var.get().strip()
@@ -4408,11 +4562,13 @@ class RaGPboBuilderApp(tk.Tk):
             "pbo_name": self.pbo_name_var.get().strip(),
             "use_binarize": bool(self.use_binarize_var.get()),
             "convert_config": bool(self.convert_config_var.get()),
+            "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
             "sign_pbos": bool(self.sign_pbos_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
             "binarize_exe": self.binarize_exe_var.get().strip(),
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
+            "imagetopaa_exe": self.imagetopaa_exe_var.get().strip(),
             "dssignfile_exe": self.dssignfile_exe_var.get().strip(),
             "private_key": self.private_key_var.get().strip(),
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,

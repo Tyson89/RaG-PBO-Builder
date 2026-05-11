@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.7.10 Beta  
+**Version:** 0.7.12 Beta  
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -20,6 +20,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Binarize `.p3d` files with DayZ Tools
 - Convert `config.cpp` files to `config.bin`
 - Support nested `config.cpp` files inside subfolders
+- Update missing or stale `.paa` files from newer `.png`/`.tga` source textures during builds
 - Sign PBOs with `DSSignFile.exe`
 - Copy the matching `.bikey` into the `Keys` folder
 - Skip unchanged addons to save build time
@@ -28,6 +29,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Keep clean `Addons` and `Keys` output folders
 - Save build logs automatically
 - Run configurable preflight checks before building
+- Preflight checks only files that belong to the selected pack target(s) and are not excluded from the packed PBO
 - Export preflight reports automatically as `.txt` and `.json`
 - Use all available logical threads as the default for Binarize workers
 - Save and restore the window size and position
@@ -178,6 +180,7 @@ RaG PBO Builder can handle the main DayZ addon build steps in one place:
 
 - Stage selected addon files
 - Apply exclude patterns
+- Optionally update missing or stale `.paa` files from `.png`/`.tga` sources in the staging folder
 - Binarize `.p3d` files when enabled
 - Preserve original `.p3d` files when Binarize does not output them
 - Convert root and nested `config.cpp` files to `config.bin`
@@ -185,6 +188,8 @@ RaG PBO Builder can handle the main DayZ addon build steps in one place:
 - Sign the `.pbo`
 - Copy the matching `.bikey`
 - Publish the final PBO/signature set safely
+
+`Update PAA` uses DayZ Tools `ImageToPAA.exe`. It writes converted `.paa` files into the staging folder only; source `.paa`, `.png`, and `.tga` files are not overwritten.
 
 Excluded `.p3d` and excluded `config.cpp` files are respected during staging, fallback checks, and config conversion.
 
@@ -578,6 +583,7 @@ The interface includes:
 - DayZ Tools installed
 - `binarize.exe` from DayZ Tools
 - `CfgConvert.exe` from DayZ Tools
+- `ImageToPAA.exe` from DayZ Tools, if `Update PAA` is enabled
 - `DSSignFile.exe` from DayZ Tools, if signing is enabled
 - A `.biprivatekey` file, if signing is enabled
 
@@ -613,7 +619,17 @@ The generated inspector executable is written to:
 dist\RaG_PBO_Inspector.exe
 ```
 
-Generated `build`, `dist`, log, and release binary files are ignored by Git. Put public binaries in GitHub Releases instead of committing them to the source tree.
+To make a public download package for GitHub Releases:
+
+```powershell
+.\package_release.ps1
+```
+
+This creates a versioned zip in `releases\` containing both EXEs, the README, licence, changelog, and SHA256 checksums.
+
+Generated `build`, `dist`, log, `.exe`, and release package files are ignored by Git. Put public binaries in GitHub Releases instead of committing them to the source tree.
+
+The repository also includes a GitHub Actions workflow. Push a tag such as `v0.7.11-beta` and GitHub will build the Windows package and attach the zip to the GitHub Release automatically.
 
 ---
 

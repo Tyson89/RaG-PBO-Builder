@@ -1,0 +1,60 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build release package
+        shell: pwsh
+        run: |
+          .\package_release.ps1
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RaG-PBO-Tools-Windows
+          path: |
+            releases/RaG_PBO_Tools_*.zip
+
+      - name: Upload GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $Tag = $env:GITHUB_REF_NAME
+          $Zip = Get-ChildItem -LiteralPath releases -Filter "RaG_PBO_Tools_*.zip" | Select-Object -First 1
+          if (-not $Zip) {
+            throw "Release zip was not created."
+          }
+
+          gh release view $Tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $Tag $Zip.FullName --clobber
+          } else {
+            gh release create $Tag $Zip.FullName --title $Tag --notes "Windows executables for RaG PBO Builder and RaG PBO Inspector."
+          }

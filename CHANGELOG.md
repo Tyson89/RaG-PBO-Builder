@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.12 Beta
+
+- Added optional `Update PAA` build step using DayZ Tools `ImageToPAA.exe`.
+- The builder can now convert missing or stale staged `.paa` files from newer `.png`/`.tga` source textures before Binarize and packing.
+- Conversion writes only to the staging folder; source textures and source `.paa` files are not overwritten.
+- Source `.png`/`.tga` fingerprints now participate in the build cache when `Update PAA` is enabled, so changed source textures trigger rebuilds.
+
+## 0.7.11 Beta
+
+- Added release packaging support with `package_release.ps1` for producing a GitHub Release zip containing both EXEs, docs, licence, changelog, and SHA256 checksums.
+- Added a GitHub Actions workflow that builds the Windows release package and uploads it to tagged GitHub Releases.
+- Tightened preflight scope so the broad file/reference scan ignores files excluded from the packed PBO, preventing unrelated source files from blocking selected addon builds.
+
 ## 0.7.10 Beta
 
 - Added `raP` detection for material-style files such as `.rvmat`, `.bisurf`, `.surface`, and `.mat`.
