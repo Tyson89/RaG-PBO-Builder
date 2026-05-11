@@ -545,15 +545,27 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
         log(f"Incremental staging: copied={copied}, updated={updated}, unchanged={unchanged}, removed={removed}, content_safe={content_safe}")
 
 
-def overlay_tree(source_dir, destination_dir):
+def overlay_tree(source_dir, destination_dir, skip_extensions=None, log=None):
     if not os.path.isdir(source_dir):
         return
+    skip_extensions = {ext.lower() for ext in (skip_extensions or set())}
+    copied = skipped = 0
     for root, dirs, files in os.walk(source_dir):
         rel_root = os.path.relpath(root, source_dir)
         target_root = destination_dir if rel_root == "." else os.path.join(destination_dir, rel_root)
         os.makedirs(target_root, exist_ok=True)
         for file in files:
+            if os.path.splitext(file)[1].lower() in skip_extensions:
+                skipped += 1
+                if log:
+                    rel_file = os.path.relpath(os.path.join(root, file), source_dir).replace(os.sep, WIN_SEP)
+                    log(f"Skipped Binarize overlay for protected file: {rel_file}")
+                continue
             shutil.copy2(os.path.join(root, file), os.path.join(target_root, file))
+            copied += 1
+
+    if log:
+        log(f"Binarize overlay: copied={copied}, protected skipped={skipped}")
 
 
 def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=None):
@@ -2465,7 +2477,7 @@ def worldname_to_pbo_entry_name(world_ref, prefix, addon_source_dir, project_roo
 
 
 def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix, project_root, extra_patterns, log):
-    wrp_files = collect_wrp_files(pack_source, extra_patterns)
+    wrp_files = collect_wrp_files(original_source_dir, extra_patterns)
 
     if not wrp_files:
         return
@@ -2479,7 +2491,7 @@ def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix
     wrp_entry_names = set()
 
     for wrp_file in wrp_files:
-        rel_wrp = os.path.relpath(wrp_file, pack_source).replace(os.sep, WIN_SEP)
+        rel_wrp = os.path.relpath(wrp_file, original_source_dir).replace(os.sep, WIN_SEP)
         key = rel_wrp.lower()
         entry = entries_by_name.get(key)
 
@@ -2489,6 +2501,11 @@ def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix
         matches, reason = pbo_entry_bytes_match_file(pbo_path, entry, wrp_file)
 
         if not matches:
+            staged_wrp = os.path.join(pack_source, rel_wrp.replace(WIN_SEP, os.sep))
+
+            if os.path.isfile(staged_wrp) and not files_have_same_content(wrp_file, staged_wrp):
+                raise BuildError(f"Post-pack WRP verification failed for {rel_wrp}: staged WRP differs from original source. Check Binarize/staging output.")
+
             raise BuildError(f"Post-pack WRP verification failed for {rel_wrp}: {reason}")
 
         wrp_entry_names.add(key)
@@ -3875,7 +3892,7 @@ def build_all(settings, log, progress_callback):
                 log("Running Binarize against filtered staging folder...")
                 run_dayz_binarize(job["binarize_source"], job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"])
                 log("Overlaying binarized files onto staging folder...")
-                overlay_tree(job["binarized_dir"], job["staging_dir"])
+                overlay_tree(job["binarized_dir"], job["staging_dir"], {".wrp"}, log)
                 fallback_count = ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclude_pattern_list)
                 summary["p3d_fallbacks"] += fallback_count
             if convert_config:

@@ -4,6 +4,7 @@
 
 - Improved config.cpp syntax error reporting so failed CfgConvert checks show the exact relative config path and the full source/staged path.
 - Build-time CPP to BIN failures now identify which nested `config.cpp` failed instead of only reporting a generic CfgConvert failure.
+- Protected `.wrp` files from Binarize overlay output so terrain files remain byte-identical to the original source WRP.
 
 ## 0.7.15 Beta
 
