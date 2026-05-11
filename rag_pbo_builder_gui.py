@@ -37,7 +37,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.12 Beta"
+APP_VERSION = "0.7.14 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -144,6 +144,10 @@ TERRAIN_SOURCE_IMAGE_EXTENSIONS = {".png", ".tga", ".psd", ".bmp"}
 TERRAIN_SOURCE_IMAGE_KEYWORDS = {"sat", "satellite", "mask", "height", "heightmap", "normal", "slope", "rough", "spec", "surface"}
 TERRAIN_LARGE_SOURCE_FILE_BYTES = 100 * 1024 * 1024
 TERRAIN_LAYER_FOLDER_NAMES = {"layers", "data\\layers", "data/layers"}
+MODULAR_TERRAIN_FOLDER_NAMES = {
+    "world", "data", "terrain", "roads", "road", "nature", "navmesh", "city", "cities",
+    "military", "structures", "objects", "clutter", "surfaces", "surface", "environment",
+}
 TERRAIN_SIZE_WARNING_BYTES = 1500 * 1024 * 1024
 TERRAIN_SIZE_HIGH_WARNING_BYTES = 3000 * 1024 * 1024
 TERRAIN_2D_MAP_REFERENCE_REGEX = re.compile(
@@ -1167,7 +1171,7 @@ def get_pbo_prefix(pbo_base_name, source_dir=None):
     return file_prefix or pbo_base_name
 
 
-def detect_addon_targets(source_root, output_addons_dir):
+def detect_addon_targets(source_root, output_addons_dir, extra_patterns=None):
     if not os.path.isdir(source_root):
         return []
     source_root = os.path.normpath(source_root)
@@ -1177,7 +1181,13 @@ def detect_addon_targets(source_root, output_addons_dir):
     output_addons_abs = os.path.abspath(output_addons_dir) if output_addons_dir else ""
     for name in os.listdir(source_root):
         full = os.path.join(source_root, name)
-        if not os.path.isdir(full) or should_skip_dir(name) or name.lower() in {"output", "addons", "keys"}:
+        lower_name = name.lower()
+        if (
+            not os.path.isdir(full)
+            or should_skip_dir(name, extra_patterns)
+            or lower_name in {"output", "addons", "keys"}
+            or lower_name in TERRAIN_SOURCE_FOLDER_NAMES
+        ):
             continue
         try:
             full_abs = os.path.abspath(full)
@@ -1372,7 +1382,7 @@ def iter_top_level_class_blocks(content):
 
 
 def parse_array_values(content, array_name):
-    pattern = re.compile(r"\b" + re.escape(array_name) + r"\s*\[\s*\]\s*=\s*\{(.*?)\}\s*;", re.IGNORECASE | re.DOTALL)
+    pattern = re.compile(r"\b" + re.escape(array_name) + r"\s*\[\s*\]\s*\+?=\s*\{(.*?)\}\s*;", re.IGNORECASE | re.DOTALL)
     match = pattern.search(content)
 
     if not match:
@@ -1695,11 +1705,11 @@ def get_required_addon_hints_for_bases(external_bases):
     return sorted(hints)
 
 
-def preflight_check_cfgpatches(config_cpp, addon_source_dir, result, log, enable_required_addons_hints=True):
-    try:
-        content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
-    except Exception as e:
-        result.warning(log, f"Could not read config.cpp for CfgPatches check: {config_cpp} ({e})")
+def preflight_check_cfgpatches(config_cpp, addon_source_dir, result, log, enable_required_addons_hints=True, project_root=""):
+    content = read_config_with_local_includes(config_cpp, None, addon_source_dir, project_root)
+
+    if not content:
+        result.warning(log, f"Could not read config.cpp for CfgPatches check: {config_cpp}")
         return
 
     result.checked_configs += 1
@@ -1902,16 +1912,117 @@ def find_config_cpp_with_class(config_files, class_name, addon_source_dir="", pr
     return ""
 
 
-def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_root, result, log):
+def get_root_config_cpp(addon_source_dir):
+    return os.path.join(addon_source_dir, "config.cpp")
+
+
+def is_root_config_cpp(config_cpp, addon_source_dir):
+    try:
+        return os.path.normcase(os.path.abspath(config_cpp)) == os.path.normcase(os.path.abspath(get_root_config_cpp(addon_source_dir)))
+    except Exception:
+        return False
+
+
+def select_cfgpatches_check_configs(config_files, addon_source_dir, project_root=""):
+    selected = []
+    seen = set()
+    root_config = get_root_config_cpp(addon_source_dir)
+
+    def add(path):
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            selected.append(path)
+            seen.add(key)
+
+    if os.path.isfile(root_config):
+        add(root_config)
+
+    for config_cpp in config_files:
+        if is_root_config_cpp(config_cpp, addon_source_dir):
+            continue
+        if config_file_has_class(config_cpp, "CfgPatches", addon_source_dir, project_root):
+            add(config_cpp)
+
+    return selected
+
+
+def analyze_cfgmods_config(config_cpp, addon_source_dir, project_root):
     content = read_config_with_local_includes(config_cpp, None, addon_source_dir, project_root)
+    clean = strip_cpp_comments(content) if content else ""
+    cfgmods_body = find_class_body(clean, "CfgMods") if clean else ""
+    declared = bool(re.search(r"\bclass\s+CfgMods\b", clean, re.IGNORECASE)) if clean else False
+    has_defs = bool(re.search(r"\bclass\s+defs\b", cfgmods_body, re.IGNORECASE)) if cfgmods_body else False
+    modules = {}
+    score = 0
+
+    if declared:
+        score += 1
+
+    if cfgmods_body:
+        score += 10
+
+    if has_defs:
+        score += 10
+
+    for module_name in SCRIPT_MODULE_FOLDERS:
+        module_body = find_class_body(cfgmods_body, module_name) if cfgmods_body else ""
+        files = parse_array_values(module_body, "files") if module_body else None
+        modules[module_name] = {"body": module_body, "files": files}
+
+        if module_body:
+            score += 3
+
+        if files is not None:
+            score += 2
+
+        if files:
+            score += len(files)
+
+    return {
+        "config_cpp": config_cpp,
+        "content": content,
+        "clean": clean,
+        "body": cfgmods_body,
+        "declared": declared,
+        "has_defs": has_defs,
+        "modules": modules,
+        "score": score,
+    }
+
+
+def find_best_cfgmods_config(config_files, addon_source_dir, project_root):
+    analyses = []
+
+    for config_cpp in config_files:
+        analysis = analyze_cfgmods_config(config_cpp, addon_source_dir, project_root)
+
+        if analysis["declared"] or analysis["body"]:
+            analyses.append(analysis)
+
+    if not analyses:
+        return None
+
+    analyses.sort(
+        key=lambda item: (
+            item["score"],
+            1 if is_root_config_cpp(item["config_cpp"], addon_source_dir) else 0,
+            -len(os.path.relpath(item["config_cpp"], addon_source_dir)),
+        ),
+        reverse=True,
+    )
+    return analyses[0]
+
+
+def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_root, result, log, cfgmods_analysis=None):
+    analysis = cfgmods_analysis or analyze_cfgmods_config(config_cpp, addon_source_dir, project_root)
+    content = analysis.get("content", "")
 
     if not content:
         result.warning(log, f"Could not read config.cpp for CfgMods check: {config_cpp}")
         return
 
-    clean = strip_cpp_comments(content)
-    cfgmods_body = find_class_body(clean, "CfgMods")
-    cfgmods_is_declared = bool(re.search(r"\bclass\s+CfgMods\b", clean, re.IGNORECASE))
+    cfgmods_body = analysis.get("body", "")
+    cfgmods_is_declared = bool(analysis.get("declared"))
     script_folders = []
 
     for folder in SCRIPT_MODULE_FOLDERS.values():
@@ -1927,25 +2038,28 @@ def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_ro
             result.warning(log, f"Script folders exist but no CfgMods class was found in addon configs: {addon_name}")
         return
 
-    if "class defs" not in cfgmods_body.lower():
-        result.warning(log, f"CfgMods exists but has no class defs section: {addon_name}")
+    rel_config = os.path.relpath(analysis.get("config_cpp", config_cpp), addon_source_dir).replace(os.sep, WIN_SEP)
+
+    if not analysis.get("has_defs"):
+        result.warning(log, f"CfgMods exists but has no class defs section in {rel_config}: {addon_name}")
 
     prefix = get_pbo_prefix(addon_name, addon_source_dir)
     referenced_paths = []
     missing_module_folder_keys = set()
 
     for module_name, expected_folder in SCRIPT_MODULE_FOLDERS.items():
-        module_body = find_class_body(cfgmods_body, module_name)
+        module_info = analysis.get("modules", {}).get(module_name, {})
+        module_body = module_info.get("body", "")
 
         if not module_body:
             expected_path = os.path.join(addon_source_dir, *expected_folder.split("/"))
             if os.path.isdir(expected_path):
-                result.warning(log, f"{expected_folder} exists but no {module_name} files[] entry was found in CfgMods: {addon_name}")
+                result.warning(log, f"{expected_folder} exists but no {module_name} files[] entry was found in CfgMods ({rel_config}): {addon_name}")
                 missing_module_folder_keys.add(os.path.normcase(os.path.abspath(expected_path)))
             continue
 
         result.checked_script_modules += 1
-        files = parse_array_values(module_body, "files")
+        files = module_info.get("files")
 
         if files is None:
             result.warning(log, f"{module_name} exists but has no files[] path: {addon_name}")
@@ -2583,7 +2697,7 @@ def collect_terrain_source_export_files(addon_source_dir, max_examples=20):
     return matches, total, total_size
 
 
-def find_terrain_layer_dirs(addon_source_dir):
+def find_terrain_layer_dirs(addon_source_dir, extra_patterns=None):
     candidates = [
         os.path.join(addon_source_dir, "data", "layers"),
         os.path.join(addon_source_dir, "layers"),
@@ -2591,15 +2705,60 @@ def find_terrain_layer_dirs(addon_source_dir):
     result = []
     seen = set()
 
-    for candidate in candidates:
+    def add_candidate(candidate):
         key = os.path.normcase(os.path.abspath(candidate))
         if key in seen:
-            continue
+            return
         seen.add(key)
         if os.path.isdir(candidate):
             result.append(candidate)
 
+    for candidate in candidates:
+        add_candidate(candidate)
+
+    for root, dirs, files in os.walk(addon_source_dir):
+        rel_root = os.path.relpath(root, addon_source_dir)
+        depth = 0 if rel_root == "." else len(Path(rel_root).parts)
+
+        if depth > 3:
+            dirs[:] = []
+            continue
+
+        dirs[:] = [
+            directory for directory in dirs
+            if not should_skip_dir(directory, extra_patterns) and directory.lower() not in TERRAIN_SOURCE_FOLDER_NAMES
+        ]
+
+        for directory in dirs:
+            if directory.lower() == "layers":
+                add_candidate(os.path.join(root, directory))
+
     return result
+
+
+def detect_modular_terrain_layout(addon_source_dir):
+    signals = set()
+    addon_name = os.path.basename(os.path.normpath(addon_source_dir)).lower()
+
+    if addon_name in MODULAR_TERRAIN_FOLDER_NAMES:
+        signals.add(addon_name)
+
+    try:
+        for entry in os.listdir(addon_source_dir):
+            full = os.path.join(addon_source_dir, entry)
+
+            if os.path.isdir(full) and entry.lower() in MODULAR_TERRAIN_FOLDER_NAMES:
+                signals.add(entry.lower())
+    except OSError:
+        pass
+
+    prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir)
+
+    for part in normalize_reference_path(prefix).split(WIN_SEP):
+        if part.lower() in MODULAR_TERRAIN_FOLDER_NAMES:
+            signals.add(part.lower())
+
+    return len(signals) >= 2 or addon_name in MODULAR_TERRAIN_FOLDER_NAMES
 
 
 def collect_rvmat_files(folder):
@@ -2620,21 +2779,25 @@ def collect_rvmat_files(folder):
 def preflight_check_terrain_structure(addon_name, addon_source_dir, wrp_files, extra_patterns, result, log):
     data_dir = os.path.join(addon_source_dir, "data")
     world_dir = os.path.join(addon_source_dir, "world")
+    modular_layout = detect_modular_terrain_layout(addon_source_dir)
 
     result.note(log, "Terrain-style folder layout detected. CE/server mission files are not validated by RaG PBO Builder.")
 
+    if modular_layout:
+        result.note(log, f"Modular terrain PBO layout detected. Classic world\\data\\layers layout warnings are relaxed for: {addon_name}")
+
     if not os.path.isdir(data_dir):
-        result.warning(log, f"Terrain/WRP addon has no data folder. This can be valid, but most terrain projects keep runtime textures/materials under data: {addon_name}")
+        result.note(log, f"Terrain/WRP addon has no local data folder. This is common in modular map PBO layouts: {addon_name}")
 
     if not os.path.isdir(world_dir):
-        result.warning(log, f"Terrain/WRP addon has no world folder. This can be valid, but most terrain projects keep the WRP and terrain config under world: {addon_name}")
+        result.note(log, f"Terrain/WRP addon has no local world folder. This is common in modular map PBO layouts: {addon_name}")
 
     for wrp_file in wrp_files:
         rel_wrp = os.path.relpath(wrp_file, addon_source_dir).replace(os.sep, WIN_SEP)
         first_part = rel_wrp.split(WIN_SEP)[0].lower() if rel_wrp else ""
 
         if first_part not in {"world", "data"}:
-            result.warning(log, f"WRP is outside a typical terrain world/data folder: {rel_wrp}")
+            result.note(log, f"WRP is outside the classic world/data sample layout. This can be valid for modular maps: {rel_wrp}")
 
     for source_root in find_terrain_source_roots(addon_source_dir):
         rel_source = os.path.relpath(source_root, addon_source_dir).replace(os.sep, WIN_SEP)
@@ -2673,11 +2836,11 @@ def preflight_check_terrain_structure(addon_name, addon_source_dir, wrp_files, e
 
 
 def preflight_check_terrain_layers(addon_name, addon_source_dir, project_root, extra_patterns, result, log):
-    layer_dirs = find_terrain_layer_dirs(addon_source_dir)
+    layer_dirs = find_terrain_layer_dirs(addon_source_dir, extra_patterns)
     detected_prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir)
 
     if not layer_dirs:
-        result.note(log, f"Terrain layers folder was not found under data\\layers or layers. This can be valid depending on your terrain workflow: {addon_name}")
+        result.note(log, f"Terrain layers folder was not found in common shallow locations. This is valid for modular maps that keep layers in another PBO or omit layer RVMATs from this addon: {addon_name}")
         return
 
     for layer_dir in layer_dirs:
@@ -3113,27 +3276,30 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
             result.note(log, "Texture freshness check disabled.")
 
         configs = collect_config_cpp_files(addon_source_dir, extra_patterns)
-        root_config_cpp = os.path.normcase(os.path.abspath(os.path.join(addon_source_dir, "config.cpp")))
-
         if configs:
             log(f"Found {len(configs)} config.cpp file(s).")
 
             for config_cpp in configs:
                 preflight_check_config_cpp(config_cpp, settings.get("cfgconvert_exe", ""), settings.get("temp_dir", DEFAULT_TEMP_DIR), addon_name, result, log)
-                preflight_check_cfgpatches(config_cpp, addon_source_dir, result, log, preflight_checks["required_addons_hints"])
+
+            cfgpatches_configs = select_cfgpatches_check_configs(configs, addon_source_dir, project_root)
+
+            if cfgpatches_configs:
+                for config_cpp in cfgpatches_configs:
+                    preflight_check_cfgpatches(config_cpp, addon_source_dir, result, log, preflight_checks["required_addons_hints"], project_root)
+            else:
+                result.error(log, f"No CfgPatches class found in addon configs: {addon_name}")
 
             # DayZ only needs one CfgMods class for script module registration.
-            # Some projects keep it in the root config.cpp, some include it from another config.cpp,
-            # and others keep it in a nested scripts\config.cpp.
-            # Do not warn per nested config; validate the config that actually contains or includes CfgMods,
-            # or warn once if none exists anywhere in the addon configs.
-            cfgmods_config_cpp = find_config_cpp_with_class(configs, "CfgMods", addon_source_dir, project_root)
-            cfgmods_check_cpp = cfgmods_config_cpp or os.path.join(addon_source_dir, "config.cpp")
+            # Prefer the config/include graph with the strongest CfgMods body instead of
+            # stopping at a weaker nested config fragment.
+            cfgmods_analysis = find_best_cfgmods_config(configs, addon_source_dir, project_root)
+            cfgmods_check_cpp = (cfgmods_analysis or {}).get("config_cpp") or get_root_config_cpp(addon_source_dir)
 
             if not os.path.isfile(cfgmods_check_cpp):
                 cfgmods_check_cpp = configs[0]
 
-            preflight_check_cfgmods(cfgmods_check_cpp, addon_name, addon_source_dir, project_root, result, log)
+            preflight_check_cfgmods(cfgmods_check_cpp, addon_name, addon_source_dir, project_root, result, log, cfgmods_analysis)
         else:
             result.warning(log, f"No config.cpp found in addon source: {addon_source_dir}")
 
@@ -3440,7 +3606,7 @@ def build_all(settings, log, progress_callback):
         log(f"Using DSSignFile.exe: {dssignfile_exe}")
         log(f"Using private key: {os.path.basename(private_key)}")
 
-    all_targets = detect_addon_targets(source_root, output_addons_dir)
+    all_targets = detect_addon_targets(source_root, output_addons_dir, exclude_pattern_list)
     targets = [(name, path) for name, path in all_targets if name in selected_addons] if selected_addons else []
     if not targets:
         raise BuildError("No addon targets selected.")
@@ -4344,14 +4510,19 @@ class RaGPboBuilderApp(tk.Tk):
         if not source_root or not os.path.isdir(source_root):
             self.update_path_preset_dropdowns()
             return
-        self.current_addon_targets = detect_addon_targets(source_root, output_addons_dir)
+        exclude_pattern_list = parse_exclude_patterns(self.exclude_patterns_var.get())
+        self.current_addon_targets = detect_addon_targets(source_root, output_addons_dir, exclude_pattern_list)
         for name, _ in self.current_addon_targets:
             self.addon_listbox.insert("end", name)
         names = [name for name, _ in self.current_addon_targets]
+        available = set(names)
         if select_all_default:
-            selection = set(names)
+            selection = available
         else:
-            selection = saved or previous or set(names)
+            requested_selection = saved or previous
+            selection = (requested_selection & available) if requested_selection else available
+            if not selection:
+                selection = available
 
         for index, name in enumerate(names):
             if name in selection:

@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.7.12 Beta  
+**Version:** 0.7.14 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -16,6 +16,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Pack selected addon folders into `.pbo` files
 - Build one addon or multiple addons at once
 - If the selected Project Source contains a `config.cpp`, it can be built as one addon
+- Terrain source/export work folders are not offered as addon build targets when selecting a map/project root
 - Support PBO prefix files such as `$PBOPREFIX$`, `$prefix$`, `$PBOPREFIX$.txt`, and `$prefix$.txt`
 - Binarize `.p3d` files with DayZ Tools
 - Convert `config.cpp` files to `config.bin`

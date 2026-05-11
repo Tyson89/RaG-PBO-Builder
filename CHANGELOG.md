@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.14 Beta
+
+- Reduced false-positive terrain warnings for modular DayZ map PBO layouts such as separate `world`, `data`, `terrain`, `roads`, `nature`, `navmesh`, `city`, and `military` addons.
+- Terrain structure checks now report classic-layout differences as info notes instead of warnings, while keeping real source/export packing risks as warnings.
+- Broadened terrain layer folder detection beyond only `data\layers` and root `layers`.
+- Improved modular config handling so nested `config.cpp` fragments are not treated as broken addon root configs unless they declare their own `CfgPatches`.
+- Improved CfgMods selection so the preflight prefers the config that actually contains the best CfgMods/script-module definition instead of stopping on a weaker nested match.
+
+## 0.7.13 Beta
+
+- Fixed addon target detection for map projects so terrain source/export work folders such as `source`, `exports`, `terrainbuilder`, and `tb` are not offered as build targets.
+- Addon discovery now uses the same exclude patterns as packing, keeping the visible build target list aligned with what the builder will actually pack.
+
 ## 0.7.12 Beta
 
 - Added optional `Update PAA` build step using DayZ Tools `ImageToPAA.exe`.
