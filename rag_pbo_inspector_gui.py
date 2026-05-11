@@ -42,7 +42,7 @@ except Exception:
 
 
 APP_TITLE = "RaG PBO Inspector"
-APP_VERSION = "0.7.14 Beta"
+APP_VERSION = "0.7.16 Beta"
 APP_ICON_FILE = os.path.join("assets", "HEADONLY_SQUARE_2k.ico")
 INSPECTOR_SETTINGS_DIR = "RaG_PBO_Inspector"
 TEXHEADERS_BIN_NAME = "texheaders.bin"

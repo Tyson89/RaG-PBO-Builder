@@ -36,8 +36,10 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from pbo_core import PboError, read_pbo_archive
+
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.14 Beta"
+APP_VERSION = "0.7.16 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -1286,10 +1288,67 @@ class PreflightResult:
         log("INFO: " + message)
 
 
-def strip_cpp_comments(content):
-    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
-    content = re.sub(r"//.*?$", "", content, flags=re.MULTILINE)
-    return content
+def strip_cpp_comments(content, preserve_lines=False):
+    if not content:
+        return ""
+
+    result = []
+    index = 0
+    in_string = ""
+    escaped = False
+
+    while index < len(content):
+        char = content[index]
+        next_char = content[index + 1] if index + 1 < len(content) else ""
+
+        if in_string:
+            result.append(char)
+
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = ""
+
+            index += 1
+            continue
+
+        if char in {'"', "'"}:
+            in_string = char
+            result.append(char)
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            index += 2
+
+            while index < len(content) and content[index] not in "\r\n":
+                if preserve_lines:
+                    result.append(" ")
+                index += 1
+
+            continue
+
+        if char == "/" and next_char == "*":
+            index += 2
+
+            while index < len(content):
+                if content[index] == "*" and index + 1 < len(content) and content[index + 1] == "/":
+                    index += 2
+                    break
+
+                if preserve_lines:
+                    result.append(content[index] if content[index] in "\r\n" else " ")
+
+                index += 1
+
+            continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
 
 
 def find_matching_brace(content, open_index):
@@ -1562,6 +1621,16 @@ def collect_config_cpp_files(source_dir, extra_patterns=None):
     return configs
 
 
+def format_config_path(config_cpp, base_dir=""):
+    if base_dir:
+        try:
+            return os.path.relpath(config_cpp, base_dir).replace(os.sep, WIN_SEP)
+        except Exception:
+            pass
+
+    return str(config_cpp)
+
+
 def collect_pbo_prefix_files(source_dir):
     prefix_names = {"$pboprefix$", "$prefix$", "$pboprefix$.txt", "$prefix$.txt"}
     matches = []
@@ -1636,14 +1705,16 @@ def preflight_check_prefix(addon_name, addon_source_dir, result, log):
     result.note(log, f"Detected PBO prefix for {addon_name}: {normalized_prefix}")
 
 
-def preflight_check_config_cpp(config_cpp, cfgconvert_exe, temp_root, addon_name, result, log):
+def preflight_check_config_cpp(config_cpp, cfgconvert_exe, temp_root, addon_name, result, log, addon_source_dir=""):
+    config_label = format_config_path(config_cpp, addon_source_dir)
+
     if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
-        result.warning(log, "CfgConvert.exe is not configured. Skipping config.cpp syntax check.")
+        result.warning(log, f"CfgConvert.exe is not configured. Skipping config.cpp syntax check for {config_label}.")
         return
 
     check_dir = os.path.join(temp_root, "preflight", get_safe_temp_name(addon_name))
     os.makedirs(check_dir, exist_ok=True)
-    output_bin = os.path.join(check_dir, os.path.basename(config_cpp) + ".bin")
+    output_bin = os.path.join(check_dir, get_safe_temp_name(config_label) + ".bin")
 
     if os.path.isfile(output_bin):
         os.remove(output_bin)
@@ -1660,12 +1731,21 @@ def preflight_check_config_cpp(config_cpp, cfgconvert_exe, temp_root, addon_name
     )
 
     if completed.returncode != 0 or not os.path.isfile(output_bin):
-        result.error(log, f"Config syntax check failed: {config_cpp}")
+        reason = f"exit code {completed.returncode}" if completed.returncode != 0 else "config.bin was not produced"
+        result.error(log, f"Config syntax check failed in {config_label} ({reason})")
+        log(f"  File: {config_cpp}")
 
-        for line in (completed.stdout or "No CfgConvert output.").splitlines():
-            log("  " + line)
+        output_lines = (completed.stdout or "").splitlines()
+
+        if output_lines:
+            log(f"  CfgConvert output for {config_label}:")
+
+            for line in output_lines:
+                log("    " + line)
+        else:
+            log(f"  CfgConvert returned no output for {config_label}.")
     else:
-        log(f"Config syntax OK: {config_cpp}")
+        log(f"Config syntax OK: {config_label}")
 
 
 def get_external_base_classes(content):
@@ -1861,10 +1941,11 @@ def read_config_with_local_includes(config_cpp, seen=None, addon_source_dir="", 
     seen.add(key)
 
     try:
-        content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
+        raw_content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return ""
 
+    content = strip_cpp_comments(raw_content, preserve_lines=True)
     include_pattern = re.compile(r"^\s*#include\s+[\"<]([^\">]+)[\">]", re.IGNORECASE | re.MULTILINE)
 
     def replace_include(match):
@@ -2104,8 +2185,9 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
     result.checked_files += 1
     seen = set()
     ext = os.path.splitext(file_path)[1].lower()
+    scan_content = strip_cpp_comments(content, preserve_lines=True) if ext in {".cpp", ".hpp", ".h", ".c", ".cfg", ".rvmat"} else content
 
-    for match in REFERENCE_REGEX.finditer(content):
+    for match in REFERENCE_REGEX.finditer(scan_content):
         ref = normalize_reference_path(match.group(1).strip())
         ref_ext = os.path.splitext(ref)[1].lower()
 
@@ -2115,7 +2197,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
             continue
 
         key = ref.lower()
-        line_number = get_line_number_from_index(content, match.start(1))
+        line_number = get_line_number_from_index(scan_content, match.start(1))
 
         if key in seen:
             continue
@@ -2124,7 +2206,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
         report_reference_status(ref, file_path, addon_source_dir, project_root, extra_patterns, result, log, "error", "referenced file", line_number)
 
     if ext == ".rvmat":
-        preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, seen)
+        preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen)
 
 
 def preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, seen=None):
@@ -2335,6 +2417,109 @@ def verify_packed_pbo(pbo_path, expected_prefix, log):
         log(f"Post-pack verification OK: size={size:,} bytes, prefix={packed_prefix or '<none>'}")
 
 
+def pbo_entry_bytes_match_file(pbo_path, entry, source_file):
+    try:
+        source_size = os.path.getsize(source_file)
+    except OSError:
+        return False, "source WRP is missing"
+
+    if entry.data_size != source_size:
+        return False, f"size mismatch, packed={entry.data_size}, source={source_size}"
+
+    if entry.packing_method != 0:
+        return False, f"unexpected packed WRP method=0x{entry.packing_method:08X}"
+
+    try:
+        with open(pbo_path, "rb") as pbo_file, open(source_file, "rb") as source:
+            pbo_file.seek(entry.offset)
+
+            while True:
+                left = source.read(COPY_CHUNK_SIZE)
+
+                if not left:
+                    break
+
+                right = pbo_file.read(len(left))
+
+                if left != right:
+                    return False, "byte mismatch"
+    except OSError as error:
+        return False, str(error)
+
+    return True, ""
+
+
+def worldname_to_pbo_entry_name(world_ref, prefix, addon_source_dir, project_root):
+    normalized_ref = normalize_reference_path(world_ref)
+    normalized_prefix = normalize_reference_path(prefix).strip(WIN_SEP)
+
+    if normalized_prefix and normalized_ref.lower().startswith(normalized_prefix.lower() + WIN_SEP):
+        return normalized_ref[len(normalized_prefix) + 1:]
+
+    resolved, status = resolve_reference_path(normalized_ref, addon_source_dir, project_root)
+
+    if status == "ok" and is_path_inside(resolved, addon_source_dir):
+        return os.path.relpath(resolved, addon_source_dir).replace(os.sep, WIN_SEP)
+
+    return ""
+
+
+def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix, project_root, extra_patterns, log):
+    wrp_files = collect_wrp_files(pack_source, extra_patterns)
+
+    if not wrp_files:
+        return
+
+    try:
+        archive = read_pbo_archive(pbo_path)
+    except PboError as error:
+        raise BuildError(f"Post-pack WRP verification failed. Could not read PBO: {error}")
+
+    entries_by_name = {entry.name.replace("/", WIN_SEP).lower(): entry for entry in archive["entries"]}
+    wrp_entry_names = set()
+
+    for wrp_file in wrp_files:
+        rel_wrp = os.path.relpath(wrp_file, pack_source).replace(os.sep, WIN_SEP)
+        key = rel_wrp.lower()
+        entry = entries_by_name.get(key)
+
+        if not entry:
+            raise BuildError(f"Post-pack WRP verification failed. WRP is missing from PBO: {rel_wrp}")
+
+        matches, reason = pbo_entry_bytes_match_file(pbo_path, entry, wrp_file)
+
+        if not matches:
+            raise BuildError(f"Post-pack WRP verification failed for {rel_wrp}: {reason}")
+
+        wrp_entry_names.add(key)
+        log(f"Post-pack WRP verification OK: {rel_wrp} ({entry.data_size:,} bytes)")
+
+    config_files = collect_config_cpp_files(original_source_dir, extra_patterns)
+    worldname_refs = find_worldname_references(config_files, original_source_dir, project_root)
+
+    if not worldname_refs:
+        log("WARNING: WRP is packed, but no active worldName .wrp reference was found in addon configs.")
+        return
+
+    for config_cpp, world_ref, line_number in worldname_refs:
+        source_location = format_source_location(config_cpp, original_source_dir, line_number)
+        expected_entry = worldname_to_pbo_entry_name(world_ref, prefix, original_source_dir, project_root)
+
+        if not expected_entry:
+            log(f"WARNING: Could not map worldName to a packed PBO entry in {source_location}: {normalize_reference_path(world_ref)}")
+            continue
+
+        expected_key = expected_entry.lower()
+
+        if expected_key not in entries_by_name:
+            raise BuildError(f"Post-pack WRP verification failed. worldName in {source_location} points to missing PBO entry: {normalize_reference_path(world_ref)} -> {expected_entry}")
+
+        if expected_key not in wrp_entry_names:
+            raise BuildError(f"Post-pack WRP verification failed. worldName in {source_location} points to a non-WRP or unexpected entry: {expected_entry}")
+
+        log(f"Post-pack worldName verification OK: {normalize_reference_path(world_ref)} -> {expected_entry}")
+
+
 def verify_published_output(pbo_path, sign_pbos, log):
     if not os.path.isfile(pbo_path):
         raise BuildError(f"Published output verification failed. PBO is missing: {pbo_path}")
@@ -2458,10 +2643,11 @@ def iter_config_file_contents(config_files, addon_source_dir="", project_root=""
         seen.add(key)
 
         try:
-            content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
+            raw_content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
         except Exception:
-            content = ""
+            raw_content = ""
 
+        content = strip_cpp_comments(raw_content, preserve_lines=True)
         yield config_cpp, content
 
         if not include_resolved or not content:
@@ -3280,7 +3466,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
             log(f"Found {len(configs)} config.cpp file(s).")
 
             for config_cpp in configs:
-                preflight_check_config_cpp(config_cpp, settings.get("cfgconvert_exe", ""), settings.get("temp_dir", DEFAULT_TEMP_DIR), addon_name, result, log)
+                preflight_check_config_cpp(config_cpp, settings.get("cfgconvert_exe", ""), settings.get("temp_dir", DEFAULT_TEMP_DIR), addon_name, result, log, addon_source_dir)
 
             cfgpatches_configs = select_cfgpatches_check_configs(configs, addon_source_dir, project_root)
 
@@ -3421,11 +3607,19 @@ def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log, extra_patterns=None)
         log("")
         log(f"Converting: {rel_config} -> {rel_bin}")
         result = subprocess.run(cmd, cwd=config_dir, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=get_subprocess_creationflags(), startupinfo=get_hidden_startupinfo())
-        if result.stdout:
-            for line in result.stdout.splitlines():
-                log(line)
+        output_lines = result.stdout.splitlines() if result.stdout else []
+
+        if output_lines:
+            log(f"CfgConvert output for {rel_config}:")
+
+            for line in output_lines:
+                log("  " + line)
+        else:
+            log(f"CfgConvert returned no output for {rel_config}.")
+
         if result.returncode != 0 or not os.path.isfile(config_bin):
-            raise BuildError(f"CfgConvert failed with exit code {result.returncode}: {config_cpp}")
+            reason = f"exit code {result.returncode}" if result.returncode != 0 else "config.bin was not produced"
+            raise BuildError(f"CfgConvert failed while converting {rel_config} ({reason}). Staged path: {config_cpp}")
         os.remove(config_cpp)
         log(f"Removed source config.cpp from staging: {rel_config}")
 
@@ -3692,6 +3886,7 @@ def build_all(settings, log, progress_callback):
             log(f"PBO prefix: {job['prefix']}")
             pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclude_pattern_list)
             verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log)
+            verify_packed_wrp_entries(job["temp_output_pbo"], job["pack_source"], job["folder_path"], job["prefix"], project_root, exclude_pattern_list, log)
             if sign_pbos:
                 wait_for_file_ready(job["temp_output_pbo"], log)
                 run_dssignfile(dssignfile_exe, private_key, job["temp_output_pbo"], log)
@@ -4344,8 +4539,8 @@ class RaGPboBuilderApp(tk.Tk):
     def open_options_window(self):
         window = tk.Toplevel(self)
         window.title("Options")
-        window.geometry("940x900")
-        window.minsize(820, 840)
+        window.geometry("940x960")
+        window.minsize(820, 900)
         window.configure(bg=GRAPHITE_BG)
         window.transient(self)
         window.grab_set()

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.16 Beta
+
+- Improved config.cpp syntax error reporting so failed CfgConvert checks show the exact relative config path and the full source/staged path.
+- Build-time CPP to BIN failures now identify which nested `config.cpp` failed instead of only reporting a generic CfgConvert failure.
+
+## 0.7.15 Beta
+
+- Fixed preflight scans reading references, `worldName`, terrain shapes, map image hints, and `#include` lines from commented-out config code.
+- Fixed C-style comment handling so commented includes are not resolved into active validation content.
+- Added post-pack WRP verification for terrain PBOs to confirm packed `.wrp` entries exist and match the staged source bytes.
+- Added post-pack `worldName` to PBO-entry checks for terrain PBOs so obvious prefix/path mismatches are caught before publishing.
+
 ## 0.7.14 Beta
 
 - Reduced false-positive terrain warnings for modular DayZ map PBO layouts such as separate `world`, `data`, `terrain`, `roads`, `nature`, `navmesh`, `city`, and `military` addons.
