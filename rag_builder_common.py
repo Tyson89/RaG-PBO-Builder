@@ -1,5 +1,6 @@
 import fnmatch
 import os
+import subprocess
 
 
 class BuildError(Exception):
@@ -57,3 +58,62 @@ def should_skip_file(filename, extra_patterns=None):
 
 def source_file_should_be_staged(filename, extra_patterns=None):
     return filename.lower() == "config.cpp" or not should_skip_file(filename, extra_patterns)
+
+
+def get_subprocess_creationflags():
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+def get_hidden_startupinfo():
+    if os.name != "nt":
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return startupinfo
+
+
+def normalize_working_dir(project_root):
+    value = project_root.rstrip(WIN_SEP + "/")
+    if len(value) == 2 and value[1] == ":":
+        return value + WIN_SEP
+    return value
+
+
+def get_safe_temp_name(name):
+    safe = name.strip() if name else "addon"
+    safe = safe.replace("/", "_").replace(WIN_SEP, "_").replace(":", "_")
+    return safe or "addon"
+
+
+def read_pbo_prefix_file(source_dir):
+    names = {"$pboprefix$", "$prefix$", "$pboprefix$.txt", "$prefix$.txt"}
+    try:
+        entries = os.listdir(source_dir)
+    except OSError:
+        return ""
+    for entry in entries:
+        if entry.lower() not in names:
+            continue
+        path = os.path.join(source_dir, entry)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8-sig", errors="ignore") as file:
+                for line in file:
+                    prefix = line.strip().strip('"').strip("'")
+                    if prefix:
+                        return prefix.replace("/", WIN_SEP).strip(WIN_SEP + "/")
+        except OSError:
+            return ""
+    return ""
+
+
+def get_pbo_prefix(pbo_base_name, source_dir=None):
+    file_prefix = read_pbo_prefix_file(source_dir) if source_dir else ""
+    return file_prefix or pbo_base_name
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
