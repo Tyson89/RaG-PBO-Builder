@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.7.17 Beta
+**Version:** 0.7.18 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -260,6 +260,7 @@ Preflight can detect or warn about:
 - `CfgPatches` problems
 - Missing or suspicious `requiredAddons[]`
 - DayZ `CfgMods` and script module path issues
+- DayZ script `modded class` declarations that incorrectly declare a base class
 - Missing referenced files
 - Referenced files that exist but are excluded from the final PBO
 - Missing textures
@@ -319,6 +320,7 @@ Line numbers are available for text-style files such as:
 - `.hpp`
 - `.rvmat`
 - `.cfg`
+- `.c`
 - `.layout`
 - `.xml`
 - `.json`

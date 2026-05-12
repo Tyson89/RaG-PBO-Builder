@@ -28,7 +28,7 @@ from rag_config_tools import (
 )
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.17 Beta"
+APP_VERSION = "0.7.18 Beta"
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
 
@@ -50,6 +50,10 @@ P3D_INTERNAL_REFERENCE_REGEX = re.compile(
 PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset")
 RISKY_REFERENCE_EXTENSIONS = {".paa", ".rvmat", ".p3d", ".wss", ".ogg", ".wav", ".emat", ".edds", ".ptc", ".bisurf"}
 SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga", ".psd"}
+MODDED_CLASS_INHERITANCE_REGEX = re.compile(
+    r"^\s*modded\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:(extends)\s+([A-Za-z_][A-Za-z0-9_]*)|(:)\s*([A-Za-z_][A-Za-z0-9_]*))",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 SCRIPT_MODULE_FOLDERS = {
     "engineScriptModule": "scripts/1_Core",
@@ -856,6 +860,9 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
     ext = os.path.splitext(file_path)[1].lower()
     scan_content = strip_cpp_comments(content, preserve_lines=True) if ext in {".cpp", ".hpp", ".h", ".c", ".cfg", ".rvmat"} else content
 
+    if ext == ".c":
+        preflight_scan_script_modded_classes(file_path, scan_content, addon_source_dir, result, log)
+
     for match in REFERENCE_REGEX.finditer(scan_content):
         ref = normalize_reference_path(match.group(1).strip())
         ref_ext = os.path.splitext(ref)[1].lower()
@@ -876,6 +883,20 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
 
     if ext == ".rvmat":
         preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen)
+
+
+def preflight_scan_script_modded_classes(file_path, content, addon_source_dir, result, log):
+    for match in MODDED_CLASS_INHERITANCE_REGEX.finditer(content):
+        class_name = match.group(1)
+        operator = "extends" if match.group(2) else ":"
+        base_class = match.group(3) or match.group(5) or ""
+        line_number = get_line_number_from_index(content, match.start())
+        source_location = format_source_location(file_path, addon_source_dir, line_number)
+        result.warning(
+            log,
+            f"Modded class should not declare a base class in {source_location}: "
+            f"modded class {class_name} {operator} {base_class}. Use 'modded class {class_name}' instead.",
+        )
 
 
 def preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, seen=None):

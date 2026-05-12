@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.18 Beta
+
+- Split Builder helper, preflight, and build pipeline code into dedicated modules for safer maintenance.
+- Added a pytest regression suite covering PBO writing, config comment parsing, build target detection, preflight scope, compressed PBO entries, and build packing behavior.
+- Added GitHub Actions CI to run tests and Python compile checks on pushes and pull requests.
+- Added a preflight warning for DayZ script `modded class` declarations that incorrectly use `extends` or `:` to declare a base class.
+- Rebuilt release packaging from the refactored source layout.
+
 ## 0.7.17 Beta
 
 - Terrain `.wrp` files now trigger the Binarize step even when the addon contains no `.p3d` files.

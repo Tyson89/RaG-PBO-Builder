@@ -64,3 +64,46 @@ def test_preflight_only_checks_selected_target(tmp_path):
     assert "BadAddon" not in joined_logs
     assert Path(result.report_txt).is_file()
     assert Path(result.report_json).is_file()
+
+
+def test_preflight_warns_for_modded_class_with_explicit_base(tmp_path):
+    addon = tmp_path / "ScriptAddon"
+    addon.mkdir()
+    write_valid_config(addon / "config.cpp")
+    (addon / "scripts.c").write_text(
+        """
+modded class Good_Base
+{
+};
+
+modded class Container_Base extends ItemBase
+{
+};
+
+modded class Barrel_ColorBase : Container_Base
+{
+};
+
+// modded class Commented_Line extends ItemBase
+/*
+modded class Commented_Block : ItemBase
+*/
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("ScriptAddon", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert joined_logs.count("Modded class should not declare a base class") == 2
+    assert "modded class Container_Base extends ItemBase" in joined_logs
+    assert "modded class Barrel_ColorBase : Container_Base" in joined_logs
+    assert "Commented_Line" not in joined_logs
+    assert "Commented_Block" not in joined_logs

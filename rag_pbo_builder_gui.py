@@ -57,7 +57,7 @@ from rag_builder_storage import (
 from rag_preflight import run_preflight_for_targets
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.17 Beta"
+APP_VERSION = "0.7.18 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
