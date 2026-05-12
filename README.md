@@ -132,6 +132,13 @@ Install Python dependencies before building from source:
 python -m pip install -r requirements.txt
 ```
 
+Install development dependencies and run the regression tests:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
 ---
 
 ## PBO Prefix Support

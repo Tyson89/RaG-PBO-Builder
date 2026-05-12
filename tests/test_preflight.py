@@ -1,0 +1,66 @@
+from pathlib import Path
+
+from rag_preflight import run_preflight_for_targets
+
+
+def write_valid_config(path):
+    path.write_text(
+        """
+class CfgPatches
+{
+    class GoodAddon
+    {
+        units[] = {};
+        weapons[] = {};
+        requiredAddons[] = {};
+    };
+};
+""",
+        encoding="utf-8",
+    )
+
+
+def base_preflight_settings(tmp_path):
+    return {
+        "project_root": str(tmp_path),
+        "temp_dir": str(tmp_path / "temp"),
+        "exclude_patterns": "",
+        "cfgconvert_exe": "",
+        "log_file": str(tmp_path / "preflight.log"),
+        "preflight_check_required_addons_hints": True,
+        "preflight_check_texture_freshness": True,
+        "preflight_check_risky_paths": True,
+        "preflight_check_case_conflicts": True,
+        "preflight_check_p3d_internal": True,
+        "preflight_check_terrain_cfgworlds": True,
+        "preflight_check_terrain_navmesh": False,
+        "preflight_check_terrain_road_shapes": True,
+        "preflight_check_terrain_structure": True,
+        "preflight_check_terrain_layers": True,
+        "preflight_check_terrain_2d_map": False,
+        "preflight_check_terrain_size": True,
+        "preflight_check_wrp_internal": False,
+    }
+
+
+def test_preflight_only_checks_selected_target(tmp_path):
+    good = tmp_path / "GoodAddon"
+    bad = tmp_path / "BadAddon"
+    good.mkdir()
+    bad.mkdir()
+    write_valid_config(good / "config.cpp")
+    (bad / "config.cpp").write_text("class NotCfgPatches {};", encoding="utf-8")
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("GoodAddon", str(good))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "BadAddon" not in joined_logs
+    assert Path(result.report_txt).is_file()
+    assert Path(result.report_json).is_file()
