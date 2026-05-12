@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run regression tests
+        shell: pwsh
+        run: |
+          python -m pytest
+
+      - name: Compile-check Python modules
+        shell: pwsh
+        run: |
+          python -m py_compile rag_builder_common.py rag_builder_storage.py rag_config_tools.py rag_pbo_writer.py rag_preflight.py rag_build_pipeline.py rag_pbo_builder_gui.py rag_pbo_inspector_gui.py pbo_core.py
