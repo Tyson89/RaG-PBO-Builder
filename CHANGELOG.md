@@ -1,10 +1,15 @@
 # Changelog
 
+## 0.7.17 Beta
+
+- Terrain `.wrp` files now trigger the Binarize step even when the addon contains no `.p3d` files.
+- Binarize overlay now allows processed `.wrp` output so terrain worlds can be converted into the engine-ready format expected by DayZ.
+- Post-pack WRP verification now compares packed WRP entries against the processed staging WRP and logs when Binarize changed the WRP from the original source.
+
 ## 0.7.16 Beta
 
 - Improved config.cpp syntax error reporting so failed CfgConvert checks show the exact relative config path and the full source/staged path.
 - Build-time CPP to BIN failures now identify which nested `config.cpp` failed instead of only reporting a generic CfgConvert failure.
-- Protected `.wrp` files from Binarize overlay output so terrain files remain byte-identical to the original source WRP.
 
 ## 0.7.15 Beta
 

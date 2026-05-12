@@ -39,7 +39,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from pbo_core import PboError, read_pbo_archive
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.16 Beta"
+APP_VERSION = "0.7.17 Beta"
 APP_AUTHOR = "RaG Tyson"
 APP_LICENSE_NAME = "Freeware - Proprietary / All Rights Reserved"
 APP_LICENSE_TEXT = """RaG PBO Builder License
@@ -565,7 +565,7 @@ def overlay_tree(source_dir, destination_dir, skip_extensions=None, log=None):
             copied += 1
 
     if log:
-        log(f"Binarize overlay: copied={copied}, protected skipped={skipped}")
+        log(f"Binarize overlay: copied={copied}, skipped={skipped}")
 
 
 def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=None):
@@ -629,6 +629,15 @@ def has_p3d_files(source_dir, extra_patterns=None):
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
             if file.lower().endswith(".p3d") and not should_skip_file(file, extra_patterns):
+                return True
+    return False
+
+
+def has_wrp_files(source_dir, extra_patterns=None):
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
+        for file in files:
+            if file.lower().endswith(".wrp") and not should_skip_file(file, extra_patterns):
                 return True
     return False
 
@@ -2477,7 +2486,7 @@ def worldname_to_pbo_entry_name(world_ref, prefix, addon_source_dir, project_roo
 
 
 def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix, project_root, extra_patterns, log):
-    wrp_files = collect_wrp_files(original_source_dir, extra_patterns)
+    wrp_files = collect_wrp_files(pack_source, extra_patterns)
 
     if not wrp_files:
         return
@@ -2491,7 +2500,7 @@ def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix
     wrp_entry_names = set()
 
     for wrp_file in wrp_files:
-        rel_wrp = os.path.relpath(wrp_file, original_source_dir).replace(os.sep, WIN_SEP)
+        rel_wrp = os.path.relpath(wrp_file, pack_source).replace(os.sep, WIN_SEP)
         key = rel_wrp.lower()
         entry = entries_by_name.get(key)
 
@@ -2501,15 +2510,15 @@ def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix
         matches, reason = pbo_entry_bytes_match_file(pbo_path, entry, wrp_file)
 
         if not matches:
-            staged_wrp = os.path.join(pack_source, rel_wrp.replace(WIN_SEP, os.sep))
-
-            if os.path.isfile(staged_wrp) and not files_have_same_content(wrp_file, staged_wrp):
-                raise BuildError(f"Post-pack WRP verification failed for {rel_wrp}: staged WRP differs from original source. Check Binarize/staging output.")
-
             raise BuildError(f"Post-pack WRP verification failed for {rel_wrp}: {reason}")
 
         wrp_entry_names.add(key)
         log(f"Post-pack WRP verification OK: {rel_wrp} ({entry.data_size:,} bytes)")
+
+        original_wrp = os.path.join(original_source_dir, rel_wrp.replace(WIN_SEP, os.sep))
+
+        if os.path.isfile(original_wrp) and not files_have_same_content(original_wrp, wrp_file):
+            log(f"Post-pack WRP note: processed WRP differs from original source, likely from Binarize: {rel_wrp}")
 
     config_files = collect_config_cpp_files(original_source_dir, extra_patterns)
     worldname_refs = find_worldname_references(config_files, original_source_dir, project_root)
@@ -3863,7 +3872,9 @@ def build_all(settings, log, progress_callback):
                     shutil.rmtree(path)
                     log(f"Force rebuild: removed selected addon temp folder only: {path}")
         folder_has_p3d = use_binarize and has_p3d_files(folder_path, exclude_pattern_list)
-        needs_staging = convert_config or folder_has_p3d or update_paa_from_sources
+        folder_has_wrp = use_binarize and has_wrp_files(folder_path, exclude_pattern_list)
+        folder_needs_binarize = use_binarize and (folder_has_p3d or folder_has_wrp)
+        needs_staging = convert_config or folder_needs_binarize or update_paa_from_sources
         pack_source = folder_path
         staging_dir = ""
         binarized_dir = ""
@@ -3872,12 +3883,12 @@ def build_all(settings, log, progress_callback):
             log("Copying source to staging folder...")
             copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True)
             pack_source = staging_dir
-        if folder_has_p3d:
+        if folder_needs_binarize:
             binarized_dir = os.path.join(addon_temp_root, "binarized")
         elif use_binarize:
-            log("No P3D files found. Skipping P3D binarize for this addon.")
+            log("No P3D or WRP files found. Skipping Binarize for this addon.")
         output_work_dir = create_output_work_dir(output_pbo, folder_name)
-        jobs.append({"folder_name": folder_name, "folder_path": folder_path, "output_pbo": output_pbo, "temp_output_pbo": os.path.join(output_work_dir, os.path.basename(output_pbo)), "output_work_dir": output_work_dir, "prefix": prefix, "pack_source": pack_source, "folder_has_p3d": folder_has_p3d, "staging_dir": staging_dir, "binarized_dir": binarized_dir, "binarize_source": staging_dir if folder_has_p3d and staging_dir else folder_path, "state_hash": state_hash})
+        jobs.append({"folder_name": folder_name, "folder_path": folder_path, "output_pbo": output_pbo, "temp_output_pbo": os.path.join(output_work_dir, os.path.basename(output_pbo)), "output_work_dir": output_work_dir, "prefix": prefix, "pack_source": pack_source, "folder_has_p3d": folder_has_p3d, "folder_has_wrp": folder_has_wrp, "folder_needs_binarize": folder_needs_binarize, "staging_dir": staging_dir, "binarized_dir": binarized_dir, "binarize_source": staging_dir if folder_needs_binarize and staging_dir else folder_path, "state_hash": state_hash})
 
     for build_index, job in enumerate(jobs, start=1):
         progress_callback(build_index - 1, len(jobs))
@@ -3888,13 +3899,14 @@ def build_all(settings, log, progress_callback):
         try:
             if update_paa_from_sources:
                 summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclude_pattern_list)
-            if use_binarize and job["folder_has_p3d"]:
+            if use_binarize and job["folder_needs_binarize"]:
                 log("Running Binarize against filtered staging folder...")
                 run_dayz_binarize(job["binarize_source"], job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"])
                 log("Overlaying binarized files onto staging folder...")
-                overlay_tree(job["binarized_dir"], job["staging_dir"], {".wrp"}, log)
-                fallback_count = ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclude_pattern_list)
-                summary["p3d_fallbacks"] += fallback_count
+                overlay_tree(job["binarized_dir"], job["staging_dir"], None, log)
+                if job["folder_has_p3d"]:
+                    fallback_count = ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclude_pattern_list)
+                    summary["p3d_fallbacks"] += fallback_count
             if convert_config:
                 ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
                 run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
