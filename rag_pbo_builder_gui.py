@@ -18,7 +18,6 @@ Features:
 - Save settings and build cache
 """
 
-import fnmatch
 import glob
 import hashlib
 import json
@@ -26,9 +25,7 @@ import os
 import queue
 import re
 import shutil
-import struct
 import subprocess
-import sys
 import threading
 import time
 import tkinter as tk
@@ -37,6 +34,38 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from pbo_core import PboError, read_pbo_archive
+from rag_builder_common import (
+    BuildError,
+    COPY_CHUNK_SIZE,
+    WIN_SEP,
+    parse_exclude_patterns,
+    should_skip_dir,
+    should_skip_file,
+    source_file_should_be_staged,
+)
+from rag_builder_storage import (
+    create_build_log_path,
+    get_app_data_dir,
+    get_logs_dir,
+    load_build_cache,
+    load_saved_settings,
+    resource_path,
+    save_build_cache,
+    save_saved_settings,
+)
+from rag_config_tools import (
+    find_class_body,
+    get_line_number_from_index,
+    iter_class_blocks,
+    iter_top_level_class_blocks,
+    parse_array_values,
+    strip_cpp_comments,
+)
+from rag_pbo_writer import (
+    pack_pbo,
+    pbo_entry_bytes_match_file,
+    verify_packed_pbo,
+)
 
 APP_TITLE = "RaG PBO Builder"
 APP_VERSION = "0.7.17 Beta"
@@ -73,10 +102,6 @@ DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
 DEFAULT_EXCLUDE_PATTERNS = "*.h,*.hpp,*.png,*.cpp,*.txt,thumbs.db,*.dep,*.bak,*.log,*.pew,source,*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max"
 
-EXCLUDE_DIRS = {".git", ".svn", ".vscode", ".idea", "__pycache__"}
-EXCLUDE_FILES = {".gitignore", ".gitattributes", "thumbs.db", "desktop.ini", ".ds_store", "$prefix$", "$pboprefix$", "$prefix$.txt", "$pboprefix$.txt"}
-EXCLUDE_EXTENSIONS = {".delete"}
-
 GRAPHITE_BG = "#24262b"
 GRAPHITE_HEADER = "#1f2126"
 GRAPHITE_CARD = "#2f3238"
@@ -100,10 +125,6 @@ GRAPHITE_BUILDING = "#7f5f3a"
 GRAPHITE_ERROR = "#ff7070"
 GRAPHITE_ERROR_DARK = "#7f3434"
 
-ZERO = bytes([0])
-WIN_SEP = chr(92)
-COPY_CHUNK_SIZE = 1024 * 1024
-PBO_VERSION_MAGIC = 0x56657273
 TEMP_MARKER_FILE = ".rag_pbo_builder_temp"
 BUILDER_TEMP_CHILDREN = {"addons", "preflight", "staging", "binarized", "configs", "_binarize_textures"}
 
@@ -173,11 +194,6 @@ REQUIRED_ADDON_HINTS = {
     "Container_Base": "DZ_Gear_Containers",
     "TentBase": "DZ_Gear_Camping",
 }
-
-
-class BuildError(Exception):
-    pass
-
 
 class ToolTip:
     def __init__(self, widget, text, delay_ms=500):
@@ -256,70 +272,6 @@ def get_default_max_processes():
     return max(1, min(get_available_logical_threads(), 64))
 
 
-def resource_path(relative_path):
-    if hasattr(sys, "_MEIPASS"):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
-
-
-def get_app_data_dir():
-    base = os.environ.get("LOCALAPPDATA")
-    app_dir = (Path(base) if base else Path.home()) / "RaG_PBO_Builder"
-    app_dir.mkdir(parents=True, exist_ok=True)
-    return app_dir
-
-
-def get_settings_file_path():
-    return get_app_data_dir() / "settings.json"
-
-
-def get_cache_file_path():
-    return get_app_data_dir() / "cache.json"
-
-
-def get_logs_dir():
-    logs_dir = get_app_data_dir() / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    return logs_dir
-
-
-def create_build_log_path():
-    return get_logs_dir() / f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-
-def load_json_file(path):
-    if not path.is_file():
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def save_json_file(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4)
-
-
-def load_saved_settings():
-    return load_json_file(get_settings_file_path())
-
-
-def save_saved_settings(data):
-    save_json_file(get_settings_file_path(), data)
-
-
-def load_build_cache():
-    return load_json_file(get_cache_file_path())
-
-
-def save_build_cache(data):
-    save_json_file(get_cache_file_path(), data)
-
-
 def get_subprocess_creationflags():
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
@@ -347,13 +299,6 @@ def get_initial_dir_from_value(value, fallback=""):
         if candidate and os.path.isdir(candidate):
             return candidate
     return str(Path.home())
-
-
-def safe_ascii(value, label):
-    try:
-        return value.encode("ascii")
-    except UnicodeEncodeError:
-        raise BuildError(f"{label} contains non-ASCII characters: {value}")
 
 
 def get_normalized_path_key(path_value):
@@ -400,42 +345,6 @@ def normalize_path_presets(value):
         seen_names.add(name.casefold())
         result.append({"name": name, "path": path})
     return result
-
-
-def parse_exclude_patterns(raw_patterns):
-    if not raw_patterns:
-        return []
-    raw_patterns = raw_patterns.replace(";", ",").replace("\r", "").replace("\n", ",")
-    return [item.strip() for item in raw_patterns.split(",") if item.strip()]
-
-
-def matches_exclude_pattern(name, patterns):
-    if not patterns:
-        return False
-    value = name.lower()
-    for pattern in patterns:
-        test = pattern.strip().lower()
-        if test and (value == test or fnmatch.fnmatch(value, test)):
-            return True
-    return False
-
-
-def should_skip_dir(dirname, extra_patterns=None):
-    name = dirname.lower()
-    return name in EXCLUDE_DIRS or matches_exclude_pattern(name, extra_patterns)
-
-
-def should_skip_file(filename, extra_patterns=None):
-    name = filename.lower()
-    if name in {"config.cpp", "config.bin"}:
-        return False
-    if name in EXCLUDE_FILES or os.path.splitext(name)[1].lower() in EXCLUDE_EXTENSIONS:
-        return True
-    return matches_exclude_pattern(name, extra_patterns)
-
-
-def source_file_should_be_staged(filename, extra_patterns=None):
-    return filename.lower() == "config.cpp" or not should_skip_file(filename, extra_patterns)
 
 
 def file_sha1(file_path):
@@ -1086,69 +995,6 @@ def create_temp_exclude_file(temp_root, raw_patterns, log):
     return ""
 
 
-def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
-    source_dir = os.path.normpath(source_dir)
-    output_path = os.path.normpath(output_path)
-    if not os.path.isdir(source_dir):
-        raise BuildError(f"Source is not a directory: {source_dir}")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    files = []
-    for root, dirs, filenames in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
-        for fname in filenames:
-            if should_skip_file(fname, extra_patterns):
-                continue
-            full = os.path.join(root, fname)
-            rel = os.path.relpath(full, source_dir).replace(os.sep, WIN_SEP)
-            files.append((rel, full, os.path.getsize(full)))
-    files.sort(key=lambda item: item[0].lower())
-    header = bytearray()
-    header.extend(ZERO)
-    header.extend(struct.pack("<I", PBO_VERSION_MAGIC))
-    header.extend(struct.pack("<IIII", 0, 0, 0, 0))
-    if prefix:
-        header.extend(b"prefix")
-        header.extend(ZERO)
-        header.extend(safe_ascii(prefix, "PBO prefix"))
-        header.extend(ZERO)
-    header.extend(ZERO)
-    for rel, full, size in files:
-        header.extend(safe_ascii(rel, "File path"))
-        header.extend(ZERO)
-        header.extend(struct.pack("<IIIII", 0, size, 0, 0, size))
-    header.extend(ZERO)
-    header.extend(struct.pack("<IIIII", 0, 0, 0, 0, 0))
-    temp_output = output_path + ".tmp"
-    sha = hashlib.sha1()
-    total = 0
-    try:
-        with open(temp_output, "wb") as out:
-            out.write(header)
-            sha.update(header)
-            total += len(header)
-            for rel, full, size in files:
-                with open(full, "rb") as file:
-                    while True:
-                        chunk = file.read(COPY_CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        sha.update(chunk)
-                        total += len(chunk)
-            out.write(ZERO)
-            out.write(sha.digest())
-            total += 21
-        os.replace(temp_output, output_path)
-    except Exception:
-        if os.path.isfile(temp_output):
-            try:
-                os.remove(temp_output)
-            except Exception:
-                pass
-        raise
-    log(f"Packed {len(files):4d} files / {total:,} bytes -> {output_path}")
-
-
 def get_safe_temp_name(name):
     safe = name.strip() if name else "addon"
     safe = safe.replace("/", "_").replace(WIN_SEP, "_").replace(":", "_")
@@ -1309,176 +1155,6 @@ class PreflightResult:
         log("INFO: " + message)
 
 
-def strip_cpp_comments(content, preserve_lines=False):
-    if not content:
-        return ""
-
-    result = []
-    index = 0
-    in_string = ""
-    escaped = False
-
-    while index < len(content):
-        char = content[index]
-        next_char = content[index + 1] if index + 1 < len(content) else ""
-
-        if in_string:
-            result.append(char)
-
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == in_string:
-                in_string = ""
-
-            index += 1
-            continue
-
-        if char in {'"', "'"}:
-            in_string = char
-            result.append(char)
-            index += 1
-            continue
-
-        if char == "/" and next_char == "/":
-            index += 2
-
-            while index < len(content) and content[index] not in "\r\n":
-                if preserve_lines:
-                    result.append(" ")
-                index += 1
-
-            continue
-
-        if char == "/" and next_char == "*":
-            index += 2
-
-            while index < len(content):
-                if content[index] == "*" and index + 1 < len(content) and content[index + 1] == "/":
-                    index += 2
-                    break
-
-                if preserve_lines:
-                    result.append(content[index] if content[index] in "\r\n" else " ")
-
-                index += 1
-
-            continue
-
-        result.append(char)
-        index += 1
-
-    return "".join(result)
-
-
-def find_matching_brace(content, open_index):
-    depth = 0
-    in_string = ""
-    escaped = False
-
-    for index in range(open_index, len(content)):
-        char = content[index]
-
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == in_string:
-                in_string = ""
-            continue
-
-        if char in {'"', "'"}:
-            in_string = char
-            continue
-
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return index
-
-    return -1
-
-
-def find_class_body(content, class_name):
-    pattern = re.compile(r"\bclass\s+" + re.escape(class_name) + r"\b[^;{]*\{", re.IGNORECASE)
-    match = pattern.search(content)
-
-    if not match:
-        return ""
-
-    open_index = content.find("{", match.start())
-    close_index = find_matching_brace(content, open_index)
-
-    if close_index < 0:
-        return ""
-
-    return content[open_index + 1:close_index]
-
-
-def iter_class_blocks(content):
-    pattern = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*([A-Za-z_][A-Za-z0-9_]*))?\s*\{", re.IGNORECASE)
-    position = 0
-
-    while True:
-        match = pattern.search(content, position)
-
-        if not match:
-            break
-
-        open_index = content.find("{", match.start())
-        close_index = find_matching_brace(content, open_index)
-
-        if close_index < 0:
-            position = match.end()
-            continue
-
-        yield match.group(1), match.group(2) or "", content[open_index + 1:close_index], match.start(), close_index + 1
-        position = close_index + 1
-
-
-def iter_top_level_class_blocks(content):
-    position = 0
-    pattern = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*([A-Za-z_][A-Za-z0-9_]*))?\s*\{", re.IGNORECASE)
-
-    while True:
-        match = pattern.search(content, position)
-
-        if not match:
-            break
-
-        open_index = content.find("{", match.start())
-        close_index = find_matching_brace(content, open_index)
-
-        if close_index < 0:
-            position = match.end()
-            continue
-
-        yield match.group(1), match.group(2) or "", content[open_index + 1:close_index]
-        position = close_index + 1
-
-
-def parse_array_values(content, array_name):
-    pattern = re.compile(r"\b" + re.escape(array_name) + r"\s*\[\s*\]\s*\+?=\s*\{(.*?)\}\s*;", re.IGNORECASE | re.DOTALL)
-    match = pattern.search(content)
-
-    if not match:
-        return None
-
-    values = []
-
-    for item in match.group(1).split(","):
-        item = item.strip().strip('"').strip("'")
-
-        if item:
-            values.append(item)
-
-    return values
-
-
 def strip_dayz_resource_guid_prefix(value):
     # DayZ .layout and some GUI/resource files can prefix asset paths with a
     # Workbench/resource GUID, for example:
@@ -1575,16 +1251,6 @@ def resolve_reference_path(reference, addon_source_dir, project_root):
             return candidate, "ok"
 
     return candidates[0] if candidates else ref_os, "missing"
-
-
-def get_line_number_from_index(content, index):
-    if content is None or index is None:
-        return 0
-
-    try:
-        return content.count(chr(10), 0, max(0, index)) + 1
-    except Exception:
-        return 0
 
 
 def format_source_location(source_file, addon_source_dir, line_number=0):
@@ -2394,80 +2060,6 @@ def verify_pack_source_before_packing(original_source_dir, pack_source, convert_
         raise BuildError("Post-conversion verification failed. Source had config.cpp but no config.bin exists in pack source.")
 
     log(f"Post-conversion verification OK: config.bin files found={config_bin_count}, config.cpp packed=0")
-
-
-def read_packed_pbo_prefix(pbo_path):
-    try:
-        with open(pbo_path, "rb") as file:
-            data = file.read(65536)
-    except OSError:
-        return ""
-
-    marker = b"prefix\x00"
-    index = data.find(marker)
-
-    if index < 0:
-        return ""
-
-    start = index + len(marker)
-    end = data.find(b"\x00", start)
-
-    if end < 0:
-        return ""
-
-    return data[start:end].decode("ascii", errors="ignore")
-
-
-def verify_packed_pbo(pbo_path, expected_prefix, log):
-    if not os.path.isfile(pbo_path):
-        raise BuildError(f"Post-pack verification failed. PBO does not exist: {pbo_path}")
-
-    size = os.path.getsize(pbo_path)
-
-    if size <= 0:
-        raise BuildError(f"Post-pack verification failed. PBO is empty: {pbo_path}")
-
-    packed_prefix = read_packed_pbo_prefix(pbo_path)
-
-    if expected_prefix and packed_prefix and packed_prefix != expected_prefix:
-        raise BuildError(f"Post-pack verification failed. PBO prefix mismatch. Expected '{expected_prefix}', got '{packed_prefix}'.")
-
-    if expected_prefix and not packed_prefix:
-        log("WARNING: Post-pack verification could not read the PBO prefix from the header.")
-    else:
-        log(f"Post-pack verification OK: size={size:,} bytes, prefix={packed_prefix or '<none>'}")
-
-
-def pbo_entry_bytes_match_file(pbo_path, entry, source_file):
-    try:
-        source_size = os.path.getsize(source_file)
-    except OSError:
-        return False, "source WRP is missing"
-
-    if entry.data_size != source_size:
-        return False, f"size mismatch, packed={entry.data_size}, source={source_size}"
-
-    if entry.packing_method != 0:
-        return False, f"unexpected packed WRP method=0x{entry.packing_method:08X}"
-
-    try:
-        with open(pbo_path, "rb") as pbo_file, open(source_file, "rb") as source:
-            pbo_file.seek(entry.offset)
-
-            while True:
-                left = source.read(COPY_CHUNK_SIZE)
-
-                if not left:
-                    break
-
-                right = pbo_file.read(len(left))
-
-                if left != right:
-                    return False, "byte mismatch"
-    except OSError as error:
-        return False, str(error)
-
-    return True, ""
 
 
 def worldname_to_pbo_entry_name(world_ref, prefix, addon_source_dir, project_root):
