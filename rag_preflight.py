@@ -20,6 +20,7 @@ from rag_builder_common import (
 )
 from rag_config_tools import (
     find_class_body,
+    find_matching_brace,
     get_line_number_from_index,
     iter_class_blocks,
     iter_top_level_class_blocks,
@@ -54,6 +55,15 @@ MODDED_CLASS_INHERITANCE_REGEX = re.compile(
     r"^\s*modded\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:(extends)\s+([A-Za-z_][A-Za-z0-9_]*)|(:)\s*([A-Za-z_][A-Za-z0-9_]*))",
     re.IGNORECASE | re.MULTILINE,
 )
+SCRIPT_CLASS_BLOCK_REGEX = re.compile(
+    r"\b(?P<modded>modded\s+)?class\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b(?P<header>[^;{]*)\{",
+    re.IGNORECASE,
+)
+SCRIPT_SETACTIONS_METHOD_REGEX = re.compile(
+    r"\b(?:override\s+)?(?:void|bool|int|float|string|vector|typename|auto|autoptr|ref|[A-Za-z_][A-Za-z0-9_<>,\s]*)\s+SetActions\s*\([^)]*\)\s*(?:override\s*)?\{",
+    re.IGNORECASE,
+)
+SCRIPT_SUPER_SETACTIONS_REGEX = re.compile(r"\bsuper\s*\.\s*SetActions\s*\(", re.IGNORECASE)
 
 SCRIPT_MODULE_FOLDERS = {
     "engineScriptModule": "scripts/1_Core",
@@ -847,7 +857,7 @@ def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_ro
             result.warning(log, f"{folder} exists but is not referenced by {module_name} files[] in CfgMods: {addon_name}")
 
 
-def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log):
+def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             content = file.read()
@@ -861,7 +871,10 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
     scan_content = strip_cpp_comments(content, preserve_lines=True) if ext in {".cpp", ".hpp", ".h", ".c", ".cfg", ".rvmat"} else content
 
     if ext == ".c":
+        preflight_scan_script_sanity(file_path, content, addon_source_dir, result, log)
         preflight_scan_script_modded_classes(file_path, scan_content, addon_source_dir, result, log)
+        preflight_scan_script_setactions_super(file_path, scan_content, addon_source_dir, result, log)
+        collect_script_class_definitions(file_path, scan_content, addon_source_dir, script_class_definitions)
 
     for match in REFERENCE_REGEX.finditer(scan_content):
         ref = normalize_reference_path(match.group(1).strip())
@@ -897,6 +910,187 @@ def preflight_scan_script_modded_classes(file_path, content, addon_source_dir, r
             f"Modded class should not declare a base class in {source_location}: "
             f"modded class {class_name} {operator} {base_class}. Use 'modded class {class_name}' instead.",
         )
+
+
+def iter_script_class_blocks(content):
+    position = 0
+
+    while True:
+        match = SCRIPT_CLASS_BLOCK_REGEX.search(content, position)
+
+        if not match:
+            break
+
+        open_index = content.find("{", match.start())
+        close_index = find_matching_brace(content, open_index)
+
+        if close_index < 0:
+            position = match.end()
+            continue
+
+        yield {
+            "name": match.group("name"),
+            "modded": bool(match.group("modded")),
+            "start": match.start(),
+            "open": open_index,
+            "close": close_index,
+            "body": content[open_index + 1:close_index],
+        }
+        position = close_index + 1
+
+
+def collect_script_class_definitions(file_path, content, addon_source_dir, script_class_definitions):
+    if script_class_definitions is None:
+        return
+
+    for block in iter_script_class_blocks(content):
+        if block["modded"]:
+            continue
+
+        line_number = get_line_number_from_index(content, block["start"])
+        script_class_definitions.append({
+            "name": block["name"],
+            "file_path": file_path,
+            "line": line_number,
+            "source": format_source_location(file_path, addon_source_dir, line_number),
+        })
+
+
+def preflight_scan_duplicate_script_classes(addon_name, definitions, result, log):
+    by_name = {}
+
+    for definition in definitions:
+        by_name.setdefault(definition["name"].lower(), []).append(definition)
+
+    for duplicates in by_name.values():
+        if len(duplicates) < 2:
+            continue
+
+        class_name = duplicates[0]["name"]
+        locations = ", ".join(item["source"] for item in duplicates[:5])
+
+        if len(duplicates) > 5:
+            locations += f", ... {len(duplicates) - 5} more"
+
+        result.warning(log, f"Duplicate script class definition in {addon_name}: class {class_name} appears in {locations}. Use 'modded class {class_name}' when extending an existing class.")
+
+
+def preflight_scan_script_setactions_super(file_path, content, addon_source_dir, result, log):
+    for block in iter_script_class_blocks(content):
+        class_body = block["body"]
+
+        for match in SCRIPT_SETACTIONS_METHOD_REGEX.finditer(class_body):
+            open_index = class_body.find("{", match.start())
+            close_index = find_matching_brace(class_body, open_index)
+
+            if open_index < 0 or close_index < 0:
+                continue
+
+            method_body = class_body[open_index + 1:close_index]
+
+            if SCRIPT_SUPER_SETACTIONS_REGEX.search(method_body):
+                continue
+
+            line_number = get_line_number_from_index(content, block["open"] + 1 + match.start())
+            source_location = format_source_location(file_path, addon_source_dir, line_number)
+            result.warning(log, f"SetActions() does not call super.SetActions() in {source_location}: class {block['name']}. This can remove inherited actions.")
+
+
+def preflight_scan_script_sanity(file_path, content, addon_source_dir, result, log):
+    stack = []
+    in_string = ""
+    string_start_line = 0
+    escaped = False
+    in_line_comment = False
+    in_block_comment = False
+    block_comment_start_line = 0
+    line = 1
+    index = 0
+    closing_for = {"}": "{", ")": "(", "]": "["}
+
+    while index < len(content):
+        char = content[index]
+        next_char = content[index + 1] if index + 1 < len(content) else ""
+
+        if char == "\n":
+            line += 1
+            in_line_comment = False
+
+        if in_line_comment:
+            index += 1
+            continue
+
+        if in_block_comment:
+            if char == "*" and next_char == "/":
+                in_block_comment = False
+                index += 2
+                continue
+
+            index += 1
+            continue
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = ""
+            elif char in "\r\n":
+                source_location = format_source_location(file_path, addon_source_dir, string_start_line)
+                result.warning(log, f"Possible unterminated string in script file at {source_location}.")
+                in_string = ""
+
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            in_line_comment = True
+            index += 2
+            continue
+
+        if char == "/" and next_char == "*":
+            in_block_comment = True
+            block_comment_start_line = line
+            index += 2
+            continue
+
+        if char in {'"', "'"}:
+            in_string = char
+            string_start_line = line
+            index += 1
+            continue
+
+        if char in "{([":
+            stack.append((char, line))
+        elif char in "}])":
+            expected = closing_for[char]
+
+            if not stack:
+                source_location = format_source_location(file_path, addon_source_dir, line)
+                result.warning(log, f"Unexpected closing '{char}' in script file at {source_location}.")
+            elif stack[-1][0] == expected:
+                stack.pop()
+            else:
+                opened, opened_line = stack[-1]
+                source_location = format_source_location(file_path, addon_source_dir, line)
+                opened_location = format_source_location(file_path, addon_source_dir, opened_line)
+                result.warning(log, f"Mismatched '{char}' in script file at {source_location}; last opened '{opened}' at {opened_location}.")
+                stack.pop()
+
+        index += 1
+
+    if in_block_comment:
+        source_location = format_source_location(file_path, addon_source_dir, block_comment_start_line)
+        result.warning(log, f"Unterminated block comment in script file at {source_location}.")
+
+    if in_string:
+        source_location = format_source_location(file_path, addon_source_dir, string_start_line)
+        result.warning(log, f"Unterminated string in script file at {source_location}.")
+
+    for opened, opened_line in stack[-10:]:
+        source_location = format_source_location(file_path, addon_source_dir, opened_line)
+        result.warning(log, f"Unclosed '{opened}' in script file at {source_location}.")
 
 
 def preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, seen=None):
@@ -1962,6 +2156,8 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
         if not preflight_checks["p3d_internal"]:
             result.note(log, "P3D internal reference scan disabled.")
 
+        script_class_definitions = []
+
         for root, dirs, files in os.walk(addon_source_dir):
             dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
 
@@ -1973,9 +2169,11 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
                 ext = os.path.splitext(file)[1].lower()
 
                 if ext in PREFLIGHT_TEXT_EXTENSIONS:
-                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log)
+                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions)
                 elif ext == ".p3d" and preflight_checks["p3d_internal"]:
                     preflight_scan_p3d_internal_references(full, addon_source_dir, project_root, extra_patterns, result, log)
+
+        preflight_scan_duplicate_script_classes(addon_name, script_class_definitions, result, log)
 
     if progress_callback:
         progress_callback(len(targets), len(targets))

@@ -107,3 +107,73 @@ modded class Commented_Block : ItemBase
     assert "modded class Barrel_ColorBase : Container_Base" in joined_logs
     assert "Commented_Line" not in joined_logs
     assert "Commented_Block" not in joined_logs
+
+
+def test_preflight_warns_for_script_duplicates_setactions_and_syntax(tmp_path):
+    addon = tmp_path / "ScriptChecks"
+    addon.mkdir()
+    write_valid_config(addon / "config.cpp")
+    (addon / "scripts_one.c").write_text(
+        """
+class DuplicateThing
+{
+};
+
+class MissingSuperActions
+{
+    override void SetActions()
+    {
+        AddAction(ActionOpen);
+    }
+};
+
+// class CommentedDuplicateThing {};
+""",
+        encoding="utf-8",
+    )
+    (addon / "scripts_two.c").write_text(
+        """
+class DuplicateThing
+{
+};
+
+class GoodActions
+{
+    override void SetActions()
+    {
+        super.SetActions();
+        AddAction(ActionClose);
+    }
+};
+""",
+        encoding="utf-8",
+    )
+    (addon / "broken_script.c").write_text(
+        """
+class BrokenScript
+{
+    void Broken()
+    {
+        if (true)
+        {
+            Print("still open");
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("ScriptChecks", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "Duplicate script class definition in ScriptChecks: class DuplicateThing" in joined_logs
+    assert "CommentedDuplicateThing" not in joined_logs
+    assert "SetActions() does not call super.SetActions()" in joined_logs
+    assert "class MissingSuperActions" in joined_logs
+    assert "class GoodActions" not in joined_logs
+    assert "Unclosed '{' in script file" in joined_logs
