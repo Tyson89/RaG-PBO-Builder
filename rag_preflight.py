@@ -27,9 +27,9 @@ from rag_config_tools import (
     parse_array_values,
     strip_cpp_comments,
 )
+from rag_version import APP_VERSION
 
 APP_TITLE = "RaG PBO Builder"
-APP_VERSION = "0.7.18 Beta"
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
 

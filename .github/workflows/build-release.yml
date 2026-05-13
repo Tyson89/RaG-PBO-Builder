@@ -33,6 +33,11 @@ jobs:
         run: |
           .\package_release.ps1
 
+      - name: Check release readiness
+        shell: pwsh
+        run: |
+          .\check_release_ready.ps1
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:

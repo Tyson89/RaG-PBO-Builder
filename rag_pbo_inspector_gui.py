@@ -47,6 +47,7 @@ from rag_inspector_viewer import (
     get_syntax_mode,
     is_text_viewable_entry,
 )
+from rag_version import APP_VERSION
 
 try:
     from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
@@ -61,7 +62,6 @@ except Exception:
 
 
 APP_TITLE = "RaG PBO Inspector"
-APP_VERSION = "0.7.18 Beta"
 APP_ICON_FILE = os.path.join("assets", "HEADONLY_SQUARE_2k.ico")
 MAX_TEXT_PREVIEW_BYTES = 5 * 1024 * 1024
 MAX_P3D_INSPECT_BYTES = 128 * 1024 * 1024

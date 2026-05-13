@@ -36,7 +36,7 @@ jobs:
       - name: Compile-check Python modules
         shell: pwsh
         run: |
-          python -m py_compile rag_builder_common.py rag_builder_storage.py rag_config_tools.py rag_pbo_writer.py rag_preflight.py rag_build_pipeline.py rag_inspector_extract.py rag_inspector_p3d.py rag_inspector_settings.py rag_inspector_viewer.py rag_pbo_builder_gui.py rag_pbo_inspector_gui.py pbo_core.py
+          python -m py_compile rag_version.py rag_builder_common.py rag_builder_storage.py rag_config_tools.py rag_pbo_writer.py rag_preflight.py rag_build_pipeline.py rag_inspector_extract.py rag_inspector_p3d.py rag_inspector_settings.py rag_inspector_viewer.py rag_pbo_builder_gui.py rag_pbo_inspector_gui.py pbo_core.py
 
   release-build-check:
     runs-on: windows-latest
@@ -59,29 +59,9 @@ jobs:
       - name: Build release package
         shell: pwsh
         run: |
-          .\package_release.ps1 -Version "ci"
+          .\package_release.ps1
 
-      - name: Verify release outputs
+      - name: Check release readiness
         shell: pwsh
         run: |
-          $Required = @(
-            "dist\RaG_PBO_Builder.exe",
-            "dist\RaG_PBO_Inspector.exe",
-            "releases\RaG_PBO_Tools_ci.zip"
-          )
-
-          foreach ($Path in $Required) {
-            if (-not (Test-Path -LiteralPath $Path)) {
-              throw "Required CI release output missing: $Path"
-            }
-          }
-
-          $ExtractDir = Join-Path $env:RUNNER_TEMP "rag-release-check"
-          Expand-Archive -LiteralPath "releases\RaG_PBO_Tools_ci.zip" -DestinationPath $ExtractDir -Force
-
-          foreach ($Name in @("RaG_PBO_Builder.exe", "RaG_PBO_Inspector.exe", "SHA256SUMS.txt")) {
-            $Path = Join-Path $ExtractDir $Name
-            if (-not (Test-Path -LiteralPath $Path)) {
-              throw "Release zip is missing: $Name"
-            }
-          }
+          .\check_release_ready.ps1

@@ -10,13 +10,12 @@ $ReleaseRoot = Join-Path $ProjectRoot "releases"
 $DistRoot = Join-Path $ProjectRoot "dist"
 
 if (-not $Version) {
-    $Source = Join-Path $ProjectRoot "rag_pbo_builder_gui.py"
-    $VersionLine = Select-String -LiteralPath $Source -Pattern 'APP_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1
-    if (-not $VersionLine -or $VersionLine.Line -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
-        throw "Could not detect APP_VERSION from $Source. Pass -Version explicitly."
+    $VersionOutput = python -c "from rag_version import APP_VERSION; print(APP_VERSION)"
+    if ($LASTEXITCODE -ne 0 -or -not $VersionOutput) {
+        throw "Could not detect APP_VERSION from rag_version.py. Pass -Version explicitly."
     }
 
-    $Version = $Matches[1]
+    $Version = $VersionOutput.Trim()
 }
 
 $SafeVersion = $Version -replace '[^A-Za-z0-9._-]+', '_'
