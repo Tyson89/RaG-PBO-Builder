@@ -56,5 +56,7 @@ def test_p3d_metadata_report_for_odol_lods_and_related_model_cfg():
     assert metadata["categorized_lods"]["Visual / resolution LODs"][0]["label"] == "Resolution 0"
     assert metadata["categorized_lods"]["Geometry / collision LODs"][0]["label"] == "Geometry"
     assert metadata["categorized_lods"]["Memory LODs"][0]["label"] == "Memory"
+    assert "does not extract, recover, reconstruct, or debinarize model.cfg" in report
+    assert "separate files already present in the PBO" in report
     assert "rag\\cabin\\data\\wall_co.paa" in report
     assert "proxy\\door.p3d" in report

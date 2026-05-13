@@ -356,12 +356,13 @@ def build_p3d_info_report(entry, metadata):
         "Notes",
         "-----",
         "- This is a metadata scan, not a P3D debinarizer.",
+        "- This tool does not extract, recover, reconstruct, or debinarize model.cfg from ODOL/P3D data.",
+        "- Loose model.cfg/model.bin entries listed below are separate files already present in the PBO, not recovered from the P3D.",
         "- Categorized LODs come from the ODOL header resolution array when it can be safely read.",
         "- The expected model.cfg class is inferred from the P3D filename.",
-        "- This tool does not recover model.cfg. Use Mikero DeP3d/ExtractModelCfg for real model.cfg extraction from supported ODOL versions.",
     ]
 
-    append_limited_section(lines, "Related loose model.cfg/model.bin entries in this PBO", metadata["related_model_cfg"], "None found in this PBO. This is normal for binarized models because model.cfg data is usually baked into the P3D.", 30)
+    append_limited_section(lines, "Related loose model.cfg/model.bin entries in this PBO", metadata["related_model_cfg"], "None found near this P3D. The Inspector will not attempt to reconstruct model.cfg from baked P3D data.", 30)
     append_lod_category_sections(lines, metadata["categorized_lods"])
     append_limited_section(lines, "Additional high-confidence LOD marker strings", metadata["lod_markers"], "No additional high-confidence LOD marker strings found.", 80)
     append_limited_section(lines, "Textures", metadata["textures"], "No texture references found.", 120)

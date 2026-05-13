@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.19 Beta
+
+- Added a scrollable Builder Options window so all settings remain reachable on smaller screens.
+- Added one master preflight Script checks toggle covering modded-class inheritance, duplicate script classes, SetActions super-call warnings, and lightweight script sanity checks.
+- Improved Inspector action layout by making Extract all the primary action and increasing the Inspector log area.
+- Improved P3D info safety wording and added actions for viewing/extracting loose model.cfg/model.bin entries that already exist in the PBO.
+- Centralized the app version in rag_version.py and added release readiness validation for version, changelog, release zip, and checksum contents.
+
 ## 0.7.18 Beta
 
 - Split Builder helper, preflight, and build pipeline code into dedicated modules for safer maintenance.

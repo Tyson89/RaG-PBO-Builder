@@ -530,8 +530,59 @@ class PboInspectorApp(DND_ROOT_CLASS):
         data = read_pbo_entry_data(self.pbo_path_var.get().strip(), entry.name, MAX_P3D_INSPECT_BYTES)
         metadata = get_p3d_metadata(entry, self.entries, data)
         report = build_p3d_info_report(entry, metadata)
-        TextViewerWindow(self, f"P3D Info: {Path(entry.name).name}", report, f"{entry.name} | {format_byte_size(get_pbo_entry_unpacked_size(entry))} | best-effort metadata scan")
+        actions = self.get_p3d_info_actions(metadata)
+        TextViewerWindow(self, f"P3D Info: {Path(entry.name).name}", report, f"{entry.name} | {format_byte_size(get_pbo_entry_unpacked_size(entry))} | safe metadata scan only", actions=actions)
         self.log(f"Inspected P3D: {entry.name}")
+
+    def get_p3d_info_actions(self, metadata):
+        related_model_cfg = list(metadata.get("related_model_cfg") or [])
+
+        if not related_model_cfg:
+            return []
+
+        view_label = "View loose model config" if len(related_model_cfg) == 1 else "View first loose model config"
+        extract_label = "Extract loose model config" if len(related_model_cfg) == 1 else "Extract loose model configs"
+
+        return [
+            (view_label, lambda viewer: self.view_entry_by_name(related_model_cfg[0], viewer)),
+            (extract_label, lambda viewer: self.extract_entries(related_model_cfg)),
+        ]
+
+    def get_entry_by_name(self, entry_name):
+        wanted = entry_name.replace("\\", "/").lower()
+
+        for entry in self.entries:
+            if entry.name.replace("\\", "/").lower() == wanted:
+                return entry
+
+        return None
+
+    def view_entry_by_name(self, entry_name, parent_window=None):
+        parent = parent_window or self
+        entry = self.get_entry_by_name(entry_name)
+
+        if not entry:
+            messagebox.showerror(APP_TITLE, f"PBO entry was not found:\n\n{entry_name}", parent=parent)
+            return
+
+        if not is_pbo_entry_supported(entry):
+            messagebox.showerror(APP_TITLE, f"Cannot preview unsupported entry:\n\n{entry.name}\n\n{get_pbo_method_label(entry.packing_method)}", parent=parent)
+            return
+
+        try:
+            if Path(entry.name).suffix.lower() == ".bin":
+                content, details = self.load_bin_preview(entry)
+                syntax_mode = "c_like"
+            else:
+                data = read_pbo_entry_data(self.pbo_path_var.get().strip(), entry.name, MAX_TEXT_PREVIEW_BYTES)
+                content, details = self.load_text_preview(entry, data)
+                syntax_mode = get_syntax_mode(entry.name)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, str(e), parent=parent)
+            return
+
+        TextViewerWindow(parent, f"View: {Path(entry.name).name}", content, details, syntax_mode)
+        self.log(f"Previewed loose model config: {entry.name}")
 
     def load_text_preview(self, entry, data):
         if is_rapified_data(data) and is_rap_text_convert_candidate_path(entry.name):
