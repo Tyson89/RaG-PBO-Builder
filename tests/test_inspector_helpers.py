@@ -6,6 +6,7 @@ from rag_inspector_extract import (
     is_rap_text_convert_candidate_path,
     is_rapified_data,
     is_texheaders_bin_path,
+    normalize_cfgconvert_text,
 )
 from rag_inspector_p3d import build_p3d_info_report, get_p3d_metadata
 from rag_inspector_viewer import decode_text_data, get_entry_path_parts, get_syntax_mode, is_text_viewable_entry
@@ -31,6 +32,56 @@ def test_inspector_viewer_helpers():
     assert get_entry_path_parts("scripts\\4_World/file.c") == ["scripts", "4_World", "file.c"]
     assert get_syntax_mode("config.cpp") == "c_like"
     assert is_text_viewable_entry("material.rvmat")
+
+
+def test_cfgconvert_float_artifacts_are_normalized_for_damage_healthlevels():
+    content = """
+class DamageSystem
+{
+    class GlobalHealth
+    {
+        class Health
+        {
+            hitpoints=1200;
+            healthLevels[]=
+            {
+                {
+                    1,
+                    {"rag\\data\\wheel.rvmat"}
+                },
+                {
+                    0.69999999,
+                    {"rag\\data\\wheel.rvmat"}
+                },
+                {
+                    0.5,
+                    {"rag\\data\\wheel_damaged.rvmat"}
+                },
+                {
+                    0.30000001,
+                    {"rag\\data\\wheel_destruct.rvmat"}
+                },
+                {
+                    0,
+                    {"rag\\data\\wheel_destruct.rvmat"}
+                }
+            };
+        };
+    };
+};
+valueOutsideHealthLevels=0.69999999;
+path="rag\\data\\lod_0.69999999.rvmat";
+"""
+
+    normalized = normalize_cfgconvert_text(content)
+
+    assert "1.00," in normalized
+    assert "0.70," in normalized
+    assert "0.50," in normalized
+    assert "0.30," in normalized
+    assert "0.00," in normalized
+    assert "valueOutsideHealthLevels=0.7;" in normalized
+    assert 'path="rag\\data\\lod_0.69999999.rvmat";' in normalized
 
 
 def test_p3d_metadata_report_for_odol_lods_and_related_model_cfg():
