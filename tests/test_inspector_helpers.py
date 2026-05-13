@@ -35,42 +35,7 @@ def test_inspector_viewer_helpers():
 
 
 def test_cfgconvert_float_artifacts_are_normalized_for_damage_healthlevels():
-    content = """
-class DamageSystem
-{
-    class GlobalHealth
-    {
-        class Health
-        {
-            hitpoints=1200;
-            healthLevels[]=
-            {
-                {
-                    1,
-                    {"rag\\data\\wheel.rvmat"}
-                },
-                {
-                    0.69999999,
-                    {"rag\\data\\wheel.rvmat"}
-                },
-                {
-                    0.5,
-                    {"rag\\data\\wheel_damaged.rvmat"}
-                },
-                {
-                    0.30000001,
-                    {"rag\\data\\wheel_destruct.rvmat"}
-                },
-                {
-                    0,
-                    {"rag\\data\\wheel_destruct.rvmat"}
-                }
-            };
-        };
-    };
-};
-valueOutsideHealthLevels=0.69999999;
-path="rag\\data\\lod_0.69999999.rvmat";
+    content = """class DamageSystem\r\r\n{\r\r\n    class GlobalHealth\r\r\n    {\r\r\n        class Health\r\r\n        {\r\r\n            hitpoints=1200;\r\r\n            healthLevels[]=\r\r\n            {\r\r\n                {\r\r\n                    1,\r\r\n                    {"rag\\data\\wheel.rvmat"}\r\r\n                },\r\r\n                {\r\r\n                    0.69999999,\r\r\n                    {"rag\\data\\wheel.rvmat"}\r\r\n                },\r\r\n                {\r\r\n                    0.5,\r\r\n                    {"rag\\data\\wheel_damaged.rvmat"}\r\r\n                },\r\r\n                {\r\r\n                    0.30000001,\r\r\n                    {"rag\\data\\wheel_destruct.rvmat"}\r\r\n                },\r\r\n                {\r\r\n                    0,\r\r\n                    {"rag\\data\\wheel_destruct.rvmat"}\r\r\n                }\r\r\n            };\r\r\n        };\r\r\n    };\r\r\n};\r\r\nvalueOutsideHealthLevels=0.69999999;\r\r\npath="rag\\data\\lod_0.69999999.rvmat";\r\r\n
 """
 
     normalized = normalize_cfgconvert_text(content)
@@ -82,6 +47,9 @@ path="rag\\data\\lod_0.69999999.rvmat";
     assert "0.00," in normalized
     assert "valueOutsideHealthLevels=0.7;" in normalized
     assert 'path="rag\\data\\lod_0.69999999.rvmat";' in normalized
+    assert "\r\r\n" not in normalized
+    assert "\r\n\r\n" not in normalized
+    assert "{\r\n    class GlobalHealth" in normalized
 
 
 def test_p3d_metadata_report_for_odol_lods_and_related_model_cfg():

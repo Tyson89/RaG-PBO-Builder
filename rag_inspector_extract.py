@@ -69,6 +69,47 @@ def normalize_cfgconvert_number_token(match):
     return token
 
 
+def normalize_cfgconvert_line_endings(content):
+    content = content.replace("\r\r\n", "\n")
+    content = content.replace("\r\n", "\n")
+    content = content.replace("\r", "\n")
+    return content.replace("\n", "\r\n")
+
+
+def normalize_cfgconvert_blank_lines(content):
+    lines = content.split("\r\n")
+    trailing_newline = lines[-1] == ""
+
+    while lines and not lines[-1].strip():
+        lines = lines[:-1]
+
+    blank_count = sum(1 for line in lines if not line.strip())
+    nonblank_count = len(lines) - blank_count
+
+    if nonblank_count and blank_count >= nonblank_count * 0.75:
+        lines = [line for line in lines if line.strip()]
+    else:
+        compacted = []
+        pending_blank = False
+
+        for line in lines:
+            if line.strip():
+                compacted.append(line)
+                pending_blank = False
+            elif not pending_blank:
+                compacted.append(line)
+                pending_blank = True
+
+        lines = compacted
+
+    content = "\r\n".join(lines)
+
+    if trailing_newline:
+        content += "\r\n"
+
+    return content
+
+
 def normalize_float_artifacts_outside_strings(content):
     result = []
     segment = []
@@ -148,6 +189,8 @@ def normalize_healthlevels_thresholds(content):
 
 
 def normalize_cfgconvert_text(content):
+    content = normalize_cfgconvert_line_endings(content)
+    content = normalize_cfgconvert_blank_lines(content)
     content = normalize_float_artifacts_outside_strings(content)
     return normalize_healthlevels_thresholds(content)
 
@@ -170,7 +213,7 @@ def normalize_cfgconvert_output_file(path):
     normalized = normalize_cfgconvert_text(content)
 
     if normalized != content:
-        output_path.write_text(normalized, encoding="utf-8")
+        output_path.write_text(normalized, encoding="utf-8", newline="")
 
 
 def convert_bin_to_cpp(cfgconvert_exe, bin_path, log):
