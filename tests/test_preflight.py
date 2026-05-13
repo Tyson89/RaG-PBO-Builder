@@ -31,6 +31,7 @@ def base_preflight_settings(tmp_path):
         "preflight_check_texture_freshness": True,
         "preflight_check_risky_paths": True,
         "preflight_check_case_conflicts": True,
+        "preflight_check_script_checks": True,
         "preflight_check_p3d_internal": True,
         "preflight_check_terrain_cfgworlds": True,
         "preflight_check_terrain_navmesh": False,
@@ -177,3 +178,54 @@ class BrokenScript
     assert "class MissingSuperActions" in joined_logs
     assert "class GoodActions" not in joined_logs
     assert "Unclosed '{' in script file" in joined_logs
+
+
+def test_preflight_can_disable_script_checks(tmp_path):
+    addon = tmp_path / "ScriptChecksOff"
+    addon.mkdir()
+    write_valid_config(addon / "config.cpp")
+    (addon / "scripts_one.c").write_text(
+        """
+class DuplicateThing
+{
+    override void SetActions()
+    {
+        AddAction(ActionOpen);
+    }
+};
+
+modded class Container_Base extends ItemBase
+{
+};
+""",
+        encoding="utf-8",
+    )
+    (addon / "scripts_two.c").write_text(
+        """
+class DuplicateThing
+{
+    void Broken()
+    {
+        if (true)
+        {
+""",
+        encoding="utf-8",
+    )
+    settings = base_preflight_settings(tmp_path)
+    settings["preflight_check_script_checks"] = False
+
+    logs = []
+    result = run_preflight_for_targets(
+        settings,
+        [("ScriptChecksOff", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "Script checks disabled." in joined_logs
+    assert "Duplicate script class definition" not in joined_logs
+    assert "SetActions() does not call super.SetActions()" not in joined_logs
+    assert "Modded class should not declare a base class" not in joined_logs
+    assert "Unclosed '{' in script file" not in joined_logs

@@ -857,7 +857,7 @@ def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_ro
             result.warning(log, f"{folder} exists but is not referenced by {module_name} files[] in CfgMods: {addon_name}")
 
 
-def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None):
+def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             content = file.read()
@@ -870,7 +870,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
     ext = os.path.splitext(file_path)[1].lower()
     scan_content = strip_cpp_comments(content, preserve_lines=True) if ext in {".cpp", ".hpp", ".h", ".c", ".cfg", ".rvmat"} else content
 
-    if ext == ".c":
+    if ext == ".c" and script_checks_enabled:
         preflight_scan_script_sanity(file_path, content, addon_source_dir, result, log)
         preflight_scan_script_modded_classes(file_path, scan_content, addon_source_dir, result, log)
         preflight_scan_script_setactions_super(file_path, scan_content, addon_source_dir, result, log)
@@ -1987,6 +1987,7 @@ def get_preflight_check_settings(settings):
         "texture_freshness": bool(settings.get("preflight_check_texture_freshness", True)),
         "risky_paths": bool(settings.get("preflight_check_risky_paths", True)),
         "case_conflicts": bool(settings.get("preflight_check_case_conflicts", True)),
+        "script_checks": bool(settings.get("preflight_check_script_checks", True)),
         "p3d_internal": bool(settings.get("preflight_check_p3d_internal", True)),
         "terrain_cfgworlds": bool(settings.get("preflight_check_terrain_cfgworlds", True)),
         "terrain_navmesh": bool(settings.get("preflight_check_terrain_navmesh", False)),
@@ -2169,11 +2170,14 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
                 ext = os.path.splitext(file)[1].lower()
 
                 if ext in PREFLIGHT_TEXT_EXTENSIONS:
-                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions)
+                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"])
                 elif ext == ".p3d" and preflight_checks["p3d_internal"]:
                     preflight_scan_p3d_internal_references(full, addon_source_dir, project_root, extra_patterns, result, log)
 
-        preflight_scan_duplicate_script_classes(addon_name, script_class_definitions, result, log)
+        if preflight_checks["script_checks"]:
+            preflight_scan_duplicate_script_classes(addon_name, script_class_definitions, result, log)
+        else:
+            result.note(log, "Script checks disabled.")
 
     if progress_callback:
         progress_callback(len(targets), len(targets))

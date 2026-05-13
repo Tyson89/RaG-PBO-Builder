@@ -209,16 +209,16 @@ class PboInspectorApp(DND_ROOT_CLASS):
         cfgconvert_entry.grid(row=2, column=1, sticky="ew", padx=(8, 8), pady=4)
         ttk.Button(path_frame, text="Browse", command=self.choose_cfgconvert_exe).grid(row=2, column=2, sticky="e", pady=4)
 
-        convert_check = tk.Checkbutton(path_frame, text="", variable=self.convert_bin_var, command=self.on_convert_option_changed, indicatoron=False, selectcolor=GRAPHITE_CARD_SOFT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 10), cursor="hand2", anchor="w", justify="left", width=48)
-        convert_check.grid(row=3, column=1, sticky="w", padx=(8, 8), pady=(4, 0))
+        convert_check = tk.Checkbutton(path_frame, text="", variable=self.convert_bin_var, command=self.on_convert_option_changed, indicatoron=False, selectcolor=GRAPHITE_CARD_SOFT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 10), cursor="hand2", anchor="w", justify="left", width=72)
+        convert_check.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(4, 0))
         self.convert_check = convert_check
         self.refresh_convert_check()
 
         action_frame = ttk.Frame(outer)
         action_frame.pack(fill="x", pady=(0, 10))
-        self.make_button(action_frame, "View selected", self.view_selected_entry, primary=True)
+        self.make_button(action_frame, "Extract selected", self.extract_selected, primary=True)
+        self.make_button(action_frame, "View selected", self.view_selected_entry)
         self.make_button(action_frame, "Reload PBO", self.inspect_pbo)
-        self.make_button(action_frame, "Extract selected", self.extract_selected)
         self.make_button(action_frame, "Extract all", self.extract_all)
         self.make_button(action_frame, "Open output", self.open_output_folder)
         ttk.Label(action_frame, textvariable=self.summary_var, foreground=GRAPHITE_MUTED).pack(side="left", padx=(6, 0))
@@ -249,7 +249,7 @@ class PboInspectorApp(DND_ROOT_CLASS):
 
         log_frame = ttk.LabelFrame(outer, text="Inspector log", padding=10)
         log_frame.pack(fill="x")
-        self.log_text = tk.Text(log_frame, height=7, wrap="word", bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Consolas", 9))
+        self.log_text = tk.Text(log_frame, height=11, wrap="word", bg=GRAPHITE_CARD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Consolas", 9))
         self.log_text.pack(fill="both", expand=True)
 
     def log(self, message):

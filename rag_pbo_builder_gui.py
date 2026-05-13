@@ -278,6 +278,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.preflight_check_texture_freshness_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_texture_freshness", True))
         self.preflight_check_risky_paths_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_risky_paths", True))
         self.preflight_check_case_conflicts_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_case_conflicts", True))
+        self.preflight_check_script_checks_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_script_checks", True))
         self.preflight_check_p3d_internal_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_p3d_internal", True))
         self.preflight_check_terrain_cfgworlds_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_terrain_cfgworlds", True))
         self.preflight_check_terrain_navmesh_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_terrain_navmesh", False))
@@ -842,14 +843,44 @@ class RaGPboBuilderApp(tk.Tk):
     def open_options_window(self):
         window = tk.Toplevel(self)
         window.title("Options")
-        window.geometry("940x960")
-        window.minsize(820, 900)
+        window.geometry("940x720")
+        window.minsize(820, 560)
         window.configure(bg=GRAPHITE_BG)
         window.transient(self)
         window.grab_set()
-        container = ttk.Frame(window, padding=16)
-        container.pack(fill="both", expand=True)
-        ttk.Label(container, text="Options", font=("Segoe UI", 17, "bold")).pack(anchor="w", pady=(0, 12))
+        outer = ttk.Frame(window, padding=16)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Options", font=("Segoe UI", 17, "bold")).pack(anchor="w", pady=(0, 12))
+
+        scroll_shell = ttk.Frame(outer)
+        scroll_shell.pack(fill="both", expand=True)
+        canvas = tk.Canvas(scroll_shell, bg=GRAPHITE_BG, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(scroll_shell, orient="vertical", command=canvas.yview)
+        container = ttk.Frame(canvas)
+        container_id = canvas.create_window((0, 0), window=container, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def update_scroll_region(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_scroll_width(event):
+            canvas.itemconfigure(container_id, width=event.width)
+
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def close_options_window():
+            window.unbind_all("<MouseWheel>")
+            window.destroy()
+
+        container.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fit_scroll_width)
+        canvas.bind("<Enter>", lambda event: window.bind_all("<MouseWheel>", on_mousewheel))
+        canvas.bind("<Leave>", lambda event: window.unbind_all("<MouseWheel>"))
+        window.protocol("WM_DELETE_WINDOW", close_options_window)
+
         frame = ttk.LabelFrame(container, text="Tool paths and build settings", padding=14)
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
@@ -911,6 +942,14 @@ class RaGPboBuilderApp(tk.Tk):
             1,
             1,
             "Best-effort scan for readable internal P3D references.",
+        )
+        self._add_checkbutton(
+            preflight_frame,
+            "Script checks",
+            self.preflight_check_script_checks_var,
+            1,
+            2,
+            "Warn about bad modded class inheritance, duplicate script classes, missing super.SetActions(), and obvious script syntax issues.",
         )
 
 
@@ -985,14 +1024,14 @@ class RaGPboBuilderApp(tk.Tk):
             "Estimate terrain addon size and warn when source/export data may be making the PBO too large.",
         )
 
-        buttons = ttk.Frame(container)
+        buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(12, 0))
         def save_and_close():
             self.exclude_patterns_var.set(exclude_entry.get("1.0", "end").strip())
             self.save_path_settings()
-            window.destroy()
+            close_options_window()
         tk.Button(buttons, text="Save", command=save_and_close, bg=GRAPHITE_ACCENT_DARK, fg="#ffffff", activebackground=GRAPHITE_ACCENT, activeforeground="#ffffff", relief="flat", borderwidth=0, padx=14, pady=8, font=("Segoe UI", 10, "bold"), cursor="hand2").pack(side="right")
-        tk.Button(buttons, text="Cancel", command=window.destroy, bg=GRAPHITE_CARD_SOFT, fg=GRAPHITE_TEXT, activebackground=GRAPHITE_BORDER, activeforeground=GRAPHITE_TEXT, relief="flat", borderwidth=0, padx=14, pady=8, font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=(0, 8))
+        tk.Button(buttons, text="Cancel", command=close_options_window, bg=GRAPHITE_CARD_SOFT, fg=GRAPHITE_TEXT, activebackground=GRAPHITE_BORDER, activeforeground=GRAPHITE_TEXT, relief="flat", borderwidth=0, padx=14, pady=8, font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=(0, 8))
 
     def get_selected_addon_names(self):
         return [self.addon_listbox.get(index) for index in self.addon_listbox.curselection()]
@@ -1067,6 +1106,7 @@ class RaGPboBuilderApp(tk.Tk):
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()) if hasattr(self, "preflight_check_texture_freshness_var") else True,
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()) if hasattr(self, "preflight_check_risky_paths_var") else True,
             "preflight_check_case_conflicts": bool(self.preflight_check_case_conflicts_var.get()) if hasattr(self, "preflight_check_case_conflicts_var") else True,
+            "preflight_check_script_checks": bool(self.preflight_check_script_checks_var.get()) if hasattr(self, "preflight_check_script_checks_var") else True,
             "preflight_check_p3d_internal": bool(self.preflight_check_p3d_internal_var.get()) if hasattr(self, "preflight_check_p3d_internal_var") else True,
             "preflight_check_terrain_cfgworlds": bool(self.preflight_check_terrain_cfgworlds_var.get()) if hasattr(self, "preflight_check_terrain_cfgworlds_var") else True,
             "preflight_check_terrain_navmesh": bool(self.preflight_check_terrain_navmesh_var.get()) if hasattr(self, "preflight_check_terrain_navmesh_var") else False,
@@ -1163,6 +1203,7 @@ class RaGPboBuilderApp(tk.Tk):
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()),
             "preflight_check_case_conflicts": bool(self.preflight_check_case_conflicts_var.get()),
+            "preflight_check_script_checks": bool(self.preflight_check_script_checks_var.get()),
             "preflight_check_p3d_internal": bool(self.preflight_check_p3d_internal_var.get()),
             "preflight_check_terrain_cfgworlds": bool(self.preflight_check_terrain_cfgworlds_var.get()),
             "preflight_check_terrain_navmesh": bool(self.preflight_check_terrain_navmesh_var.get()),
@@ -1250,6 +1291,7 @@ class RaGPboBuilderApp(tk.Tk):
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()),
             "preflight_check_case_conflicts": bool(self.preflight_check_case_conflicts_var.get()),
+            "preflight_check_script_checks": bool(self.preflight_check_script_checks_var.get()),
             "preflight_check_p3d_internal": bool(self.preflight_check_p3d_internal_var.get()),
             "preflight_check_terrain_cfgworlds": bool(self.preflight_check_terrain_cfgworlds_var.get()),
             "preflight_check_terrain_navmesh": bool(self.preflight_check_terrain_navmesh_var.get()),
