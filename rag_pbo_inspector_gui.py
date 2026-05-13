@@ -216,10 +216,10 @@ class PboInspectorApp(DND_ROOT_CLASS):
 
         action_frame = ttk.Frame(outer)
         action_frame.pack(fill="x", pady=(0, 10))
-        self.make_button(action_frame, "Extract selected", self.extract_selected, primary=True)
+        self.make_button(action_frame, "Extract all", self.extract_all, primary=True)
+        self.make_button(action_frame, "Extract selected", self.extract_selected)
         self.make_button(action_frame, "View selected", self.view_selected_entry)
         self.make_button(action_frame, "Reload PBO", self.inspect_pbo)
-        self.make_button(action_frame, "Extract all", self.extract_all)
         self.make_button(action_frame, "Open output", self.open_output_folder)
         ttk.Label(action_frame, textvariable=self.summary_var, foreground=GRAPHITE_MUTED).pack(side="left", padx=(6, 0))
 
