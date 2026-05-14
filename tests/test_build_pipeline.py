@@ -1,5 +1,5 @@
 from pbo_core import read_pbo_archive
-from rag_build_pipeline import build_all, detect_addon_targets
+from rag_build_pipeline import build_all, detect_addon_targets, get_effective_pbo_prefix
 
 
 def test_detect_addon_targets_skips_terrain_source_folder(tmp_path):
@@ -14,6 +14,42 @@ def test_detect_addon_targets_skips_terrain_source_folder(tmp_path):
 
     assert ("MapWorld", str(addon)) in targets
     assert all(name.lower() != "source" for name, _ in targets)
+
+
+def test_effective_pbo_prefix_uses_project_relative_terrain_worldname(tmp_path):
+    addon = tmp_path / "outpost" / "world"
+    addon.mkdir(parents=True)
+    (addon / "outpost.wrp").write_bytes(b"wrp")
+    (addon / "config.cpp").write_text(
+        r"""
+class CfgPatches
+{
+    class outpost_world
+    {
+        requiredAddons[] = {};
+    };
+};
+class CfgWorlds
+{
+    class CAWorld;
+    class outpost: CAWorld
+    {
+        worldName = "outpost\world\outpost.wrp";
+    };
+};
+class CfgWorldList
+{
+    class outpost {};
+};
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    prefix = get_effective_pbo_prefix("world", str(addon), str(tmp_path), [], logs.append)
+
+    assert prefix == r"outpost\world"
+    assert "Terrain worldName implies PBO prefix 'outpost\\world'" in "\n".join(logs)
 
 
 def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, monkeypatch):

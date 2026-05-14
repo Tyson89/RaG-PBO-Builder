@@ -20,6 +20,7 @@ from rag_builder_common import (
     get_subprocess_creationflags,
     normalize_working_dir,
     parse_exclude_patterns,
+    read_pbo_prefix_file,
     should_skip_dir,
     should_skip_file,
     source_file_should_be_staged,
@@ -32,6 +33,7 @@ from rag_preflight import (
     collect_wrp_files,
     find_worldname_references,
     format_source_location,
+    infer_terrain_pbo_prefix_from_worldname,
     is_path_inside,
     normalize_reference_path,
     resolve_reference_path,
@@ -265,6 +267,29 @@ def has_wrp_files(source_dir, extra_patterns=None):
             if file.lower().endswith(".wrp") and not should_skip_file(file, extra_patterns):
                 return True
     return False
+
+
+def get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, extra_patterns, log=None):
+    prefix = get_pbo_prefix(pbo_base_name, folder_path)
+
+    if read_pbo_prefix_file(folder_path):
+        return prefix
+
+    wrp_files = collect_wrp_files(folder_path, extra_patterns)
+
+    if not wrp_files:
+        return prefix
+
+    config_files = collect_config_cpp_files(folder_path, extra_patterns)
+    worldname_refs = find_worldname_references(config_files, folder_path, project_root)
+    inferred_prefix = infer_terrain_pbo_prefix_from_worldname(folder_path, wrp_files, worldname_refs)
+
+    if inferred_prefix and inferred_prefix.lower() != prefix.lower():
+        if log:
+            log(f"Terrain worldName implies PBO prefix '{inferred_prefix}'. Using it instead of fallback prefix '{prefix}'.")
+        return inferred_prefix
+
+    return prefix
 
 
 def normalize_project_root_arg(project_root):
@@ -1237,7 +1262,7 @@ def build_all(settings, log, progress_callback):
         log("=" * 80)
         pbo_base_name = get_pbo_base_name(folder_name, pbo_name, len(targets))
         output_pbo = os.path.join(output_addons_dir, pbo_base_name + ".pbo")
-        prefix = get_pbo_prefix(pbo_base_name, folder_path)
+        prefix = get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, exclude_pattern_list, log)
         state_hash = compute_addon_state_hash(folder_path, prefix, settings, exclude_pattern_list, build_hash_cache)
         can_skip = (not force_rebuild and source_cache.get(folder_name, {}).get("hash") == state_hash and os.path.isfile(output_pbo) and (not sign_pbos or find_new_signature_for_pbo(output_pbo)))
         if can_skip:

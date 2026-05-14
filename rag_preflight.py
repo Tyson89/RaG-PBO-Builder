@@ -1329,6 +1329,79 @@ def find_worldname_references(config_files, addon_source_dir="", project_root=""
     return results
 
 
+def split_worldname_prefix_for_wrp(world_ref, wrp_rel):
+    normalized_world_ref = normalize_reference_path(world_ref).strip(WIN_SEP)
+    normalized_wrp_rel = normalize_reference_path(wrp_rel).strip(WIN_SEP)
+
+    if not normalized_world_ref or not normalized_wrp_rel:
+        return None
+
+    if normalized_world_ref.lower() == normalized_wrp_rel.lower():
+        return ""
+
+    suffix = WIN_SEP + normalized_wrp_rel
+
+    if normalized_world_ref.lower().endswith(suffix.lower()):
+        return normalized_world_ref[:-len(suffix)].strip(WIN_SEP)
+
+    return None
+
+
+def match_worldname_to_wrp_file(world_ref, wrp_files, addon_source_dir):
+    for wrp_file in wrp_files:
+        wrp_rel = os.path.relpath(wrp_file, addon_source_dir).replace(os.sep, WIN_SEP)
+
+        if split_worldname_prefix_for_wrp(world_ref, wrp_rel) is not None:
+            return wrp_file
+
+    return ""
+
+
+def infer_terrain_pbo_prefix_from_worldname(addon_source_dir, wrp_files, worldname_refs):
+    prefixes = set()
+
+    for _config_cpp, world_ref, _line_number in worldname_refs:
+        for wrp_file in wrp_files:
+            wrp_rel = os.path.relpath(wrp_file, addon_source_dir).replace(os.sep, WIN_SEP)
+            prefix = split_worldname_prefix_for_wrp(world_ref, wrp_rel)
+
+            if prefix:
+                prefixes.add(prefix)
+
+    if len(prefixes) == 1:
+        return next(iter(prefixes))
+
+    return ""
+
+
+def build_expected_worldname_paths(prefix, wrp_rel_paths):
+    normalized_prefix = normalize_reference_path(prefix).strip(WIN_SEP)
+    expected = []
+
+    for wrp_rel in wrp_rel_paths:
+        normalized_wrp = normalize_reference_path(wrp_rel).strip(WIN_SEP)
+
+        if normalized_prefix:
+            expected.append(normalized_prefix + WIN_SEP + normalized_wrp)
+        else:
+            expected.append(normalized_wrp)
+
+    return expected
+
+
+def format_expected_worldname_paths(expected_paths, limit=3):
+    if not expected_paths:
+        return ""
+
+    shown = expected_paths[:limit]
+    text = ", ".join(f"'{path}'" for path in shown)
+
+    if len(expected_paths) > limit:
+        text += f", ... {len(expected_paths) - limit} more"
+
+    return text
+
+
 def find_terrain_shape_references(config_files, addon_source_dir="", project_root=""):
     # Terrain configs commonly use newRoadsShape = "...roads.shp";
     # The broader regex catches explicit quoted shape references as well.
@@ -1832,9 +1905,6 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
     detected_prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir)
 
     if checks.get("terrain_cfgworlds", True):
-        if not explicit_prefix:
-            result.warning(log, f"Terrain/WRP addon has no explicit PBO prefix file. For maps, a $PBOPREFIX$ file is strongly recommended: {addon_name}")
-
         if not config_files:
             result.error(log, f"WRP found but no config.cpp exists in terrain addon: {addon_name}")
         else:
@@ -1848,6 +1918,14 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
                 result.warning(log, f"WRP found but no CfgWorldList class found in addon configs: {addon_name}")
 
             worldname_refs = find_worldname_references(config_files, addon_source_dir, project_root)
+            inferred_prefix = infer_terrain_pbo_prefix_from_worldname(addon_source_dir, wrp_files, worldname_refs)
+            effective_prefix = explicit_prefix or inferred_prefix or detected_prefix
+
+            if not explicit_prefix:
+                if inferred_prefix:
+                    result.note(log, f"No explicit PBO prefix file found, but terrain worldName implies prefix '{inferred_prefix}'. The builder can use this common project-relative terrain layout: {addon_name}")
+                else:
+                    result.warning(log, f"Terrain/WRP addon has no explicit PBO prefix file. For maps, a $PBOPREFIX$ file is strongly recommended: {addon_name}")
 
             if not worldname_refs:
                 result.warning(log, f"WRP found but no worldName .wrp path was found in addon configs: {addon_name}")
@@ -1860,12 +1938,21 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
 
                 detected_wrp_keys = {os.path.normcase(os.path.abspath(path)) for path in wrp_files}
                 resolved_worldname_keys = set()
+                expected_worldname_paths = build_expected_worldname_paths(effective_prefix, wrp_rel_paths)
+                expected_worldname_keys = {path.lower() for path in expected_worldname_paths}
 
                 for config_cpp, world_ref, line_number in worldname_refs:
                     source_location = format_source_location(config_cpp, addon_source_dir, line_number)
                     normalized_world_ref = normalize_reference_path(world_ref)
-                    report_reference_status(normalized_world_ref, config_cpp, addon_source_dir, project_root, extra_patterns, result, log, "error", "worldName WRP", line_number)
-                    resolved, status = resolve_reference_path(normalized_world_ref, addon_source_dir, project_root)
+                    matched_wrp = match_worldname_to_wrp_file(normalized_world_ref, wrp_files, addon_source_dir)
+
+                    if matched_wrp:
+                        resolved_worldname_keys.add(os.path.normcase(os.path.abspath(matched_wrp)))
+                        resolved = matched_wrp
+                        status = "ok"
+                    else:
+                        report_reference_status(normalized_world_ref, config_cpp, addon_source_dir, project_root, extra_patterns, result, log, "error", "worldName WRP", line_number)
+                        resolved, status = resolve_reference_path(normalized_world_ref, addon_source_dir, project_root)
 
                     if status == "ok":
                         resolved_key = os.path.normcase(os.path.abspath(resolved))
@@ -1878,8 +1965,10 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
                                 resolved_rel = resolved
                             result.warning(log, f"worldName in {source_location} points to a WRP that differs from detected addon WRP files: {resolved_rel}")
 
-                    if detected_prefix and not normalized_world_ref.lower().startswith(detected_prefix.lower() + WIN_SEP):
-                        result.warning(log, f"worldName path does not start with detected PBO prefix in {source_location}: prefix '{detected_prefix}', worldName '{normalized_world_ref}'")
+                    if effective_prefix and normalized_world_ref.lower() not in expected_worldname_keys and not normalized_world_ref.lower().startswith(effective_prefix.lower() + WIN_SEP):
+                        expected_text = format_expected_worldname_paths(expected_worldname_paths)
+                        suffix = f". Expected packed WRP path may be: {expected_text}" if expected_text else ""
+                        result.warning(log, f"worldName path does not match the effective PBO prefix in {source_location}: prefix '{effective_prefix}', worldName '{normalized_world_ref}'{suffix}")
 
                 unused_wrp_paths = []
 

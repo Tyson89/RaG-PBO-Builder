@@ -67,6 +67,52 @@ def test_preflight_only_checks_selected_target(tmp_path):
     assert Path(result.report_json).is_file()
 
 
+def test_preflight_accepts_project_relative_terrain_worldname(tmp_path):
+    addon = tmp_path / "outpost" / "world"
+    addon.mkdir(parents=True)
+    (addon / "outpost.wrp").write_bytes(b"wrp")
+    (addon / "config.cpp").write_text(
+        r"""
+class CfgPatches
+{
+    class outpost_world
+    {
+        units[] = {};
+        weapons[] = {};
+        requiredAddons[] = {};
+    };
+};
+class CfgWorlds
+{
+    class CAWorld;
+    class outpost: CAWorld
+    {
+        worldName = "outpost\world\outpost.wrp";
+    };
+};
+class CfgWorldList
+{
+    class outpost {};
+};
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("world", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "terrain worldName implies prefix 'outpost\\world'" in joined_logs
+    assert "worldName path does not match the effective PBO prefix" not in joined_logs
+    assert "WRP file(s) are present but not referenced by worldName" not in joined_logs
+
+
 def test_preflight_warns_for_modded_class_with_explicit_base(tmp_path):
     addon = tmp_path / "ScriptAddon"
     addon.mkdir()
