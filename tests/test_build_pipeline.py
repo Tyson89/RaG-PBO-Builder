@@ -1,5 +1,38 @@
 from pbo_core import read_pbo_archive
-from rag_build_pipeline import build_all, detect_addon_targets, get_effective_pbo_prefix
+from rag_build_pipeline import build_all, copy_source_to_staging, detect_addon_targets, get_effective_pbo_prefix
+
+
+def test_copy_source_to_staging_skips_odol_p3d_when_requested(tmp_path):
+    source = tmp_path / "source"
+    nested = source / "models"
+    nested.mkdir(parents=True)
+    (source / "binarized.p3d").write_bytes(b"ODOL" + b"\x00" * 60)
+    (nested / "editable.p3d").write_bytes(b"MLOD" + b"\x00" * 60)
+    (source / "terrain.wrp").write_bytes(b"OPRW" + b"\x00" * 60)
+    (source / "config.cpp").write_text("class CfgPatches {};", encoding="utf-8")
+
+    staging = tmp_path / "staging"
+    logs = []
+    copy_source_to_staging(str(source), str(staging), None, logs.append, True, True)
+
+    assert not (staging / "binarized.p3d").exists()
+    assert (staging / "models" / "editable.p3d").exists()
+    assert (staging / "terrain.wrp").exists()
+    assert (staging / "config.cpp").exists()
+    assert any("binarized.p3d" in line and "ODOL" in line for line in logs)
+
+
+def test_copy_source_to_staging_keeps_odol_p3d_when_skip_disabled(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "binarized.p3d").write_bytes(b"ODOL" + b"\x00" * 60)
+    (source / "config.cpp").write_text("class CfgPatches {};", encoding="utf-8")
+
+    staging = tmp_path / "staging"
+    copy_source_to_staging(str(source), str(staging), None, None, True, False)
+
+    assert (staging / "binarized.p3d").exists()
+    assert (staging / "config.cpp").exists()
 
 
 def test_detect_addon_targets_skips_terrain_source_folder(tmp_path):

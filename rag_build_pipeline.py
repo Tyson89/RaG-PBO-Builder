@@ -134,7 +134,7 @@ def file_fingerprint(file_path, include_content=False, build_hash_cache=None):
         return {"path": file_path or "", "exists": False}
 
 
-def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=None, content_safe=True):
+def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=None, content_safe=True, skip_odol_p3d=False):
     os.makedirs(staging_dir, exist_ok=True)
     expected = set()
     copied = updated = unchanged = removed = 0
@@ -144,6 +144,13 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
             if not source_file_should_be_staged(file, extra_patterns):
                 continue
             source_file = os.path.join(root, file)
+            if skip_odol_p3d and file.lower().endswith(".p3d"):
+                with open(source_file, "rb") as handle:
+                    if handle.read(4) == b"ODOL":
+                        if log:
+                            rel = os.path.relpath(source_file, source_dir).replace(os.sep, WIN_SEP)
+                            log(f"Detected already-binarized (ODOL) P3D. Skipping Binarize; original will be packed as-is: {rel}")
+                        continue
             rel = os.path.relpath(source_file, source_dir)
             expected.add(rel.replace(os.sep, WIN_SEP).lower())
             target_file = os.path.join(staging_dir, rel)
@@ -1286,7 +1293,7 @@ def build_all(settings, log, progress_callback):
         if needs_staging:
             staging_dir = os.path.join(addon_temp_root, "staging")
             log("Copying source to staging folder...")
-            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True)
+            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True, folder_needs_binarize)
             pack_source = staging_dir
         if folder_needs_binarize:
             binarized_dir = os.path.join(addon_temp_root, "binarized")

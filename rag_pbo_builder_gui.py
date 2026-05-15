@@ -481,7 +481,7 @@ class RaGPboBuilderApp(tk.Tk):
             options.columnconfigure(col, minsize=size)
         options.columnconfigure(4, weight=1)
         ttk.Label(options, text="Pipeline", style="FieldMuted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
-        self._add_checkbutton(options, "Binarize P3D", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D files.")
+        self._add_checkbutton(options, "Binarize P3D", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D files. Already-binarized (ODOL) P3Ds are skipped and packed as-is to avoid double binarization.")
         self._add_checkbutton(options, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
         self._add_checkbutton(options, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
         self._add_checkbutton(options, "Update PAA", self.update_paa_from_sources_var, 0, 4, "Use ImageToPAA.exe to update missing or stale staged .paa files from newer .png/.tga source textures. Source files are not overwritten.")

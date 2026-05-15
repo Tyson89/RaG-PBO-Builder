@@ -44,6 +44,25 @@ def base_preflight_settings(tmp_path):
     }
 
 
+def test_preflight_warns_on_odol_p3d_in_source(tmp_path):
+    addon = tmp_path / "OdolAddon"
+    addon.mkdir()
+    write_valid_config(addon / "config.cpp")
+    (addon / "binarized.p3d").write_bytes(b"ODOL" + b"\x00" * 60)
+    (addon / "editable.p3d").write_bytes(b"MLOD" + b"\x00" * 60)
+
+    logs = []
+    run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("OdolAddon", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+    assert "ODOL" in joined_logs and "binarized.p3d" in joined_logs
+    assert "editable.p3d" not in joined_logs or "ODOL" not in joined_logs.split("editable.p3d", 1)[1].splitlines()[0]
+
+
 def test_preflight_only_checks_selected_target(tmp_path):
     good = tmp_path / "GoodAddon"
     bad = tmp_path / "BadAddon"
