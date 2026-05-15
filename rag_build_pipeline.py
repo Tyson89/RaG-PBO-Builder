@@ -134,10 +134,22 @@ def file_fingerprint(file_path, include_content=False, build_hash_cache=None):
         return {"path": file_path or "", "exists": False}
 
 
-def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=None, content_safe=True):
+def get_p3d_magic(file_path):
+    try:
+        with open(file_path, "rb") as file:
+            return file.read(4)
+    except OSError:
+        return b""
+
+
+def is_odol_p3d(file_path):
+    return get_p3d_magic(file_path) == b"ODOL"
+
+
+def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=None, content_safe=True, skip_odol_p3d=False):
     os.makedirs(staging_dir, exist_ok=True)
     expected = set()
-    copied = updated = unchanged = removed = 0
+    copied = updated = unchanged = removed = skipped_odol_p3d = 0
     for root, dirs, files in os.walk(source_dir):
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
@@ -145,6 +157,9 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
                 continue
             source_file = os.path.join(root, file)
             rel = os.path.relpath(source_file, source_dir)
+            if skip_odol_p3d and file.lower().endswith(".p3d") and is_odol_p3d(source_file):
+                skipped_odol_p3d += 1
+                continue
             expected.add(rel.replace(os.sep, WIN_SEP).lower())
             target_file = os.path.join(staging_dir, rel)
             if files_are_same_for_staging(source_file, target_file, content_safe):
@@ -170,6 +185,8 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
                 pass
     if log:
         log(f"Incremental staging: copied={copied}, updated={updated}, unchanged={unchanged}, removed={removed}, content_safe={content_safe}")
+        if skipped_odol_p3d:
+            log(f"Skipped {skipped_odol_p3d} already-binarized ODOL P3D file(s) before Binarize. They will be copied back unchanged before packing.")
 
 
 def overlay_tree(source_dir, destination_dir, skip_extensions=None, log=None):
@@ -256,6 +273,17 @@ def has_p3d_files(source_dir, extra_patterns=None):
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
             if file.lower().endswith(".p3d") and not should_skip_file(file, extra_patterns):
+                return True
+    return False
+
+
+def has_binarizable_p3d_files(source_dir, extra_patterns=None):
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
+        for file in files:
+            if not file.lower().endswith(".p3d") or should_skip_file(file, extra_patterns):
+                continue
+            if not is_odol_p3d(os.path.join(root, file)):
                 return True
     return False
 
@@ -1277,8 +1305,9 @@ def build_all(settings, log, progress_callback):
                     shutil.rmtree(path)
                     log(f"Force rebuild: removed selected addon temp folder only: {path}")
         folder_has_p3d = use_binarize and has_p3d_files(folder_path, exclude_pattern_list)
+        folder_has_binarizable_p3d = use_binarize and has_binarizable_p3d_files(folder_path, exclude_pattern_list)
         folder_has_wrp = use_binarize and has_wrp_files(folder_path, exclude_pattern_list)
-        folder_needs_binarize = use_binarize and (folder_has_p3d or folder_has_wrp)
+        folder_needs_binarize = use_binarize and (folder_has_binarizable_p3d or folder_has_wrp)
         needs_staging = convert_config or folder_needs_binarize or update_paa_from_sources
         pack_source = folder_path
         staging_dir = ""
@@ -1286,14 +1315,17 @@ def build_all(settings, log, progress_callback):
         if needs_staging:
             staging_dir = os.path.join(addon_temp_root, "staging")
             log("Copying source to staging folder...")
-            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True)
+            copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True, folder_needs_binarize)
             pack_source = staging_dir
         if folder_needs_binarize:
             binarized_dir = os.path.join(addon_temp_root, "binarized")
         elif use_binarize:
-            log("No P3D or WRP files found. Skipping Binarize for this addon.")
+            if folder_has_p3d:
+                log("Only already-binarized ODOL P3D files found. Skipping Binarize for this addon.")
+            else:
+                log("No P3D or WRP files found. Skipping Binarize for this addon.")
         output_work_dir = create_output_work_dir(output_pbo, folder_name)
-        jobs.append({"folder_name": folder_name, "folder_path": folder_path, "output_pbo": output_pbo, "temp_output_pbo": os.path.join(output_work_dir, os.path.basename(output_pbo)), "output_work_dir": output_work_dir, "prefix": prefix, "pack_source": pack_source, "folder_has_p3d": folder_has_p3d, "folder_has_wrp": folder_has_wrp, "folder_needs_binarize": folder_needs_binarize, "staging_dir": staging_dir, "binarized_dir": binarized_dir, "binarize_source": staging_dir if folder_needs_binarize and staging_dir else folder_path, "state_hash": state_hash})
+        jobs.append({"folder_name": folder_name, "folder_path": folder_path, "output_pbo": output_pbo, "temp_output_pbo": os.path.join(output_work_dir, os.path.basename(output_pbo)), "output_work_dir": output_work_dir, "prefix": prefix, "pack_source": pack_source, "folder_has_p3d": folder_has_p3d, "folder_has_binarizable_p3d": folder_has_binarizable_p3d, "folder_has_wrp": folder_has_wrp, "folder_needs_binarize": folder_needs_binarize, "staging_dir": staging_dir, "binarized_dir": binarized_dir, "binarize_source": staging_dir if folder_needs_binarize and staging_dir else folder_path, "state_hash": state_hash})
 
     for build_index, job in enumerate(jobs, start=1):
         progress_callback(build_index - 1, len(jobs))

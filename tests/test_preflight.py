@@ -156,6 +156,26 @@ modded class Commented_Block : ItemBase
     assert "Commented_Block" not in joined_logs
 
 
+def test_preflight_warns_for_odol_p3d(tmp_path):
+    addon = tmp_path / "ModelAddon"
+    addon.mkdir()
+    write_valid_config(addon / "config.cpp")
+    (addon / "packed_model.p3d").write_bytes(b"ODOL already binarized")
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("ModelAddon", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "P3D is already binarized ODOL" in joined_logs
+    assert "packed_model.p3d" in joined_logs
+
+
 def test_preflight_warns_for_script_duplicates_setactions_and_syntax(tmp_path):
     addon = tmp_path / "ScriptChecks"
     addon.mkdir()

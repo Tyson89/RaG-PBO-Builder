@@ -1,5 +1,12 @@
 from pbo_core import read_pbo_archive
-from rag_build_pipeline import build_all, detect_addon_targets, get_effective_pbo_prefix
+from rag_build_pipeline import (
+    build_all,
+    copy_source_to_staging,
+    detect_addon_targets,
+    ensure_p3d_files_in_staging,
+    get_effective_pbo_prefix,
+    has_binarizable_p3d_files,
+)
 
 
 def test_detect_addon_targets_skips_terrain_source_folder(tmp_path):
@@ -50,6 +57,35 @@ class CfgWorldList
 
     assert prefix == r"outpost\world"
     assert "Terrain worldName implies PBO prefix 'outpost\\world'" in "\n".join(logs)
+
+
+def test_odol_p3ds_are_kept_out_of_binarize_staging_then_restored(tmp_path):
+    source = tmp_path / "source"
+    staging = tmp_path / "staging"
+    models = source / "models"
+    models.mkdir(parents=True)
+    (models / "packed.p3d").write_bytes(b"ODOL already binarized")
+    (models / "source.p3d").write_bytes(b"MLOD source model")
+
+    logs = []
+    copy_source_to_staging(str(source), str(staging), [], logs.append, True, True)
+
+    assert not (staging / "models" / "packed.p3d").exists()
+    assert (staging / "models" / "source.p3d").read_bytes() == b"MLOD source model"
+    assert has_binarizable_p3d_files(str(source), []) is True
+
+    copied = ensure_p3d_files_in_staging(str(source), str(staging), logs.append, [])
+
+    assert copied == 1
+    assert (staging / "models" / "packed.p3d").read_bytes() == b"ODOL already binarized"
+
+
+def test_only_odol_p3ds_do_not_require_binarize(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "packed.p3d").write_bytes(b"ODOL already binarized")
+
+    assert has_binarizable_p3d_files(str(source), []) is False
 
 
 def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, monkeypatch):

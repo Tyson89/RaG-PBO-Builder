@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.20 Beta
+
+- Added support for common project-relative terrain `worldName` paths, allowing layouts like `outpost\world\outpost.wrp` to imply the packed PBO prefix when no `$PBOPREFIX$` file exists.
+- Skipped already-binarized ODOL `.p3d` files from Binarize input to avoid DayZ Tools access violations, then restored them unchanged before packing.
+- Added a preflight warning for ODOL `.p3d` files so unpacked-from-PBO source trees are easier to audit before building.
+
 ## 0.7.19 Beta
 
 - Added a scrollable Builder Options window so all settings remain reachable on smaller screens.

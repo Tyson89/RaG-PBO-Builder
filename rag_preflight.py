@@ -1126,6 +1126,10 @@ def preflight_scan_p3d_internal_references(p3d_file, addon_source_dir, project_r
         return
 
     result.checked_files += 1
+
+    if data.startswith(b"ODOL"):
+        result.warning(log, f"P3D is already binarized ODOL. Binarize should not process it; the builder will copy it unchanged when needed: {rel_file}")
+
     seen = set()
     found = 0
 
