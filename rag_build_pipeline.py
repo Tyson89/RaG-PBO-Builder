@@ -145,6 +145,8 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
                 continue
             source_file = os.path.join(root, file)
             if skip_odol_p3d and file.lower().endswith(".p3d"):
+                # Binarize crashes on ODOL P3Ds; keep them out of staging. The post-Binarize
+                # ensure_p3d_files_in_staging step restores them from source for packing.
                 with open(source_file, "rb") as handle:
                     if handle.read(4) == b"ODOL":
                         if log:
