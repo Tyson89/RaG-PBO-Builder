@@ -295,3 +295,96 @@ class DuplicateThing
     assert "SetActions() does not call super.SetActions()" not in joined_logs
     assert "Modded class should not declare a base class" not in joined_logs
     assert "Unclosed '{' in script file" not in joined_logs
+
+
+def make_rvmat_addon(tmp_path, with_paa):
+    addon = tmp_path / "MyMod"
+    layers = addon / "data" / "layers"
+    layers.mkdir(parents=True)
+    write_valid_config(addon / "config.cpp")
+    (layers / "surface.rvmat").write_text(
+        'class Stage1\n{\n    texture="MyMod\\data\\layers\\foo_co.png";\n};\n',
+        encoding="utf-8",
+    )
+    (layers / "foo_co.png").write_bytes(b"png")
+    if with_paa:
+        (layers / "foo_co.paa").write_bytes(b"paa")
+    return addon
+
+
+def rvmat_preflight_settings(tmp_path):
+    # Source art excluded from the packed PBO, as in a typical DayZ project.
+    settings = base_preflight_settings(tmp_path)
+    settings["exclude_patterns"] = "*.png,*.tga"
+    return settings
+
+
+def test_preflight_flags_rvmat_source_texture_when_rewrite_disabled(tmp_path):
+    addon = make_rvmat_addon(tmp_path, with_paa=True)
+
+    logs = []
+    result = run_preflight_for_targets(
+        rvmat_preflight_settings(tmp_path),
+        [("MyMod", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert "RVMAT references a source texture format instead of .paa" in joined_logs
+    assert "Referenced file exists but is excluded from the packed PBO" in joined_logs
+    assert "will be rewritten to .paa during build" not in joined_logs
+
+
+def test_preflight_suppresses_rvmat_texture_findings_when_rewrite_will_fix_them(tmp_path):
+    addon = make_rvmat_addon(tmp_path, with_paa=True)
+    settings = rvmat_preflight_settings(tmp_path)
+    settings["rewrite_rvmat_texture_refs"] = True
+
+    logs = []
+    result = run_preflight_for_targets(
+        settings,
+        [("MyMod", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "RVMAT references a source texture format instead of .paa" not in joined_logs
+    assert "Referenced file exists but is excluded from the packed PBO" not in joined_logs
+    assert "RVMAT source texture reference will be rewritten to .paa during build" in joined_logs
+
+
+def test_preflight_rewrite_awareness_respects_conservative_paa_requirement(tmp_path):
+    # .paa is absent from source: the build only rewrites when Update PAA will
+    # generate it, so preflight must still flag it when Update PAA is off.
+    addon = make_rvmat_addon(tmp_path, with_paa=False)
+    settings = rvmat_preflight_settings(tmp_path)
+    settings["rewrite_rvmat_texture_refs"] = True
+
+    logs = []
+    result = run_preflight_for_targets(
+        settings,
+        [("MyMod", str(addon))],
+        logs.append,
+    )
+    joined_logs = "\n".join(logs)
+
+    assert "RVMAT references a source texture format instead of .paa" in joined_logs
+    assert "will be rewritten to .paa during build" not in joined_logs
+
+    # With Update PAA enabled the .paa will be generated from the source
+    # texture, so the build will rewrite the reference and preflight clears it.
+    settings["update_paa_from_sources"] = True
+    logs = []
+    result = run_preflight_for_targets(
+        settings,
+        [("MyMod", str(addon))],
+        logs.append,
+    )
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "RVMAT references a source texture format instead of .paa" not in joined_logs
+    assert "RVMAT source texture reference will be rewritten to .paa during build" in joined_logs

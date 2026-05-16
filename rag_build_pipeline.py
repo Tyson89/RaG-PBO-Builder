@@ -2,6 +2,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -43,6 +44,7 @@ from rag_preflight import (
 TEMP_MARKER_FILE = ".rag_pbo_builder_temp"
 BUILDER_TEMP_CHILDREN = {"addons", "preflight", "staging", "binarized", "configs", "_binarize_textures"}
 PAA_SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga"}
+RVMAT_REWRITE_SOURCE_EXTENSIONS = ("png", "tga")
 
 def get_available_logical_threads():
     process_cpu_count = getattr(os, "process_cpu_count", None)
@@ -809,6 +811,7 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
         "exclude_patterns": settings["exclude_patterns"],
         "max_processes": settings["max_processes"],
         "update_paa_from_sources": bool(settings.get("update_paa_from_sources", False)),
+        "rewrite_rvmat_texture_refs": bool(settings.get("rewrite_rvmat_texture_refs", False)),
         "binarize_exe": file_fingerprint(settings.get("binarize_exe", ""), True, build_hash_cache),
         "cfgconvert_exe": file_fingerprint(settings.get("cfgconvert_exe", ""), True, build_hash_cache),
         "imagetopaa_exe": file_fingerprint(settings.get("imagetopaa_exe", ""), True, build_hash_cache),
@@ -1194,6 +1197,95 @@ def update_staging_paa_from_source_textures(source_dir, staging_dir, imagetopaa_
     return converted
 
 
+def staged_paa_reference_exists(paa_ref, rvmat_dir, staging_dir):
+    normalized = paa_ref.replace("\\", "/").lstrip("/")
+    segments = [segment for segment in normalized.split("/") if segment]
+
+    if not segments:
+        return False
+
+    candidates = [
+        os.path.join(rvmat_dir, *segments),
+        os.path.join(staging_dir, *segments),
+    ]
+
+    if len(segments) > 1:
+        # Handles prefix/project-root-rooted refs like "\MyMod\data\tex_co.paa"
+        # where the staging root maps to the addon prefix.
+        candidates.append(os.path.join(staging_dir, *segments[1:]))
+
+    return any(os.path.isfile(candidate) for candidate in candidates)
+
+
+def rewrite_staging_rvmat_texture_refs(staging_dir, log, extra_patterns=None):
+    if not os.path.isdir(staging_dir):
+        raise BuildError(f"Staging folder does not exist for RVMAT rewrite: {staging_dir}")
+
+    rvmat_files = []
+
+    for root, dirs, files in os.walk(staging_dir):
+        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
+
+        for file in files:
+            if os.path.splitext(file)[1].lower() == ".rvmat":
+                rvmat_files.append(os.path.join(root, file))
+
+    if not rvmat_files:
+        log("No .rvmat files found for texture reference rewrite.")
+        return 0
+
+    rvmat_files.sort(key=lambda path: os.path.relpath(path, staging_dir).lower())
+    pattern = re.compile(r'(["\'])([^"\']+?)\.(' + "|".join(RVMAT_REWRITE_SOURCE_EXTENSIONS) + r')\1', re.IGNORECASE)
+    rewritten = 0
+
+    log("")
+    log(f"Rewriting .png/.tga texture references to .paa in {len(rvmat_files)} .rvmat file(s):")
+
+    for rvmat_path in rvmat_files:
+        rel = os.path.relpath(rvmat_path, staging_dir).replace(os.sep, WIN_SEP)
+
+        try:
+            with open(rvmat_path, "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+
+        # Already-rapified RVMATs store references in binary; skip them.
+        if raw[:4] == b"\x00raP":
+            continue
+
+        try:
+            text = raw.decode("utf-8")
+            encoding = "utf-8"
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+            encoding = "latin-1"
+
+        rvmat_dir = os.path.dirname(rvmat_path)
+
+        def replace(match):
+            quote, path_body = match.group(1), match.group(2)
+            paa_ref = path_body + ".paa"
+
+            # Conservative: only rewrite when the target .paa exists in staging,
+            # so deliberately-source refs and dangling refs are left untouched.
+            if not staged_paa_reference_exists(paa_ref, rvmat_dir, staging_dir):
+                return match.group(0)
+
+            return quote + paa_ref + quote
+
+        new_text = pattern.sub(replace, text)
+
+        if new_text != text:
+            with open(rvmat_path, "w", encoding=encoding, newline="") as handle:
+                handle.write(new_text)
+            log(f"Rewrote texture references to .paa: {rel}")
+            rewritten += 1
+
+    log(f"Rewrote texture references in {rewritten} .rvmat file(s).")
+    return rewritten
+
+
 def build_all(settings, log, progress_callback):
     start = time.time()
     source_root = os.path.normpath(settings["source_root"])
@@ -1211,6 +1303,7 @@ def build_all(settings, log, progress_callback):
     convert_config = settings["convert_config"]
     sign_pbos = settings["sign_pbos"]
     update_paa_from_sources = bool(settings.get("update_paa_from_sources", False))
+    rewrite_rvmat_texture_refs = bool(settings.get("rewrite_rvmat_texture_refs", False))
     binarize_exe = settings["binarize_exe"]
     cfgconvert_exe = settings["cfgconvert_exe"]
     imagetopaa_exe = settings.get("imagetopaa_exe", "")
@@ -1251,6 +1344,8 @@ def build_all(settings, log, progress_callback):
         if not imagetopaa_exe or not os.path.isfile(imagetopaa_exe):
             raise BuildError("ImageToPAA.exe not found. Select the DayZ Tools ImageToPAA.exe path or disable Update PAA.")
         log(f"Using ImageToPAA.exe: {imagetopaa_exe}")
+    if rewrite_rvmat_texture_refs:
+        log("RVMAT texture reference rewrite enabled: .png/.tga refs will be retargeted to .paa in staging.")
     if sign_pbos:
         if not dssignfile_exe or not os.path.isfile(dssignfile_exe):
             raise BuildError("DSSignFile.exe not found. Select the DayZ Tools DSSignFile.exe path.")
@@ -1276,7 +1371,7 @@ def build_all(settings, log, progress_callback):
     build_hash_cache = {}
     cache_key_root = os.path.abspath(source_root).lower()
     source_cache = cache.setdefault(cache_key_root, {})
-    summary = {"built": 0, "skipped": 0, "signed": 0, "failed": 0, "keys_copied": 0, "p3d_fallbacks": 0, "paa_updates": 0, "targets": len(targets), "log_file": settings.get("log_file", "")}
+    summary = {"built": 0, "skipped": 0, "signed": 0, "failed": 0, "keys_copied": 0, "p3d_fallbacks": 0, "paa_updates": 0, "rvmat_rewrites": 0, "targets": len(targets), "log_file": settings.get("log_file", "")}
     jobs = []
 
     if force_rebuild:
@@ -1308,7 +1403,7 @@ def build_all(settings, log, progress_callback):
         folder_has_binarizable_p3d = use_binarize and has_binarizable_p3d_files(folder_path, exclude_pattern_list)
         folder_has_wrp = use_binarize and has_wrp_files(folder_path, exclude_pattern_list)
         folder_needs_binarize = use_binarize and (folder_has_binarizable_p3d or folder_has_wrp)
-        needs_staging = convert_config or folder_needs_binarize or update_paa_from_sources
+        needs_staging = convert_config or folder_needs_binarize or update_paa_from_sources or rewrite_rvmat_texture_refs
         pack_source = folder_path
         staging_dir = ""
         binarized_dir = ""
@@ -1336,6 +1431,8 @@ def build_all(settings, log, progress_callback):
         try:
             if update_paa_from_sources:
                 summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclude_pattern_list)
+            if rewrite_rvmat_texture_refs:
+                summary["rvmat_rewrites"] += rewrite_staging_rvmat_texture_refs(job["pack_source"], log, exclude_pattern_list)
             if use_binarize and job["folder_needs_binarize"]:
                 log("Running Binarize against filtered staging folder...")
                 run_dayz_binarize(job["binarize_source"], job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"])
@@ -1384,6 +1481,7 @@ def build_all(settings, log, progress_callback):
     log(f"Keys copied:   {summary['keys_copied']}")
     log(f"P3D fallbacks: {summary['p3d_fallbacks']}")
     log(f"PAA updates:   {summary['paa_updates']}")
+    log(f"RVMAT rewrites: {summary['rvmat_rewrites']}")
     log(f"Failed:        {summary['failed']}")
     log(f"Time:          {format_duration(elapsed)}")
     if settings.get("log_file"):

@@ -261,6 +261,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.use_binarize_var = tk.BooleanVar(value=self.saved_settings.get("use_binarize", True))
         self.convert_config_var = tk.BooleanVar(value=self.saved_settings.get("convert_config", True))
         self.update_paa_from_sources_var = tk.BooleanVar(value=self.saved_settings.get("update_paa_from_sources", False))
+        self.rewrite_rvmat_texture_refs_var = tk.BooleanVar(value=self.saved_settings.get("rewrite_rvmat_texture_refs", False))
         self.sign_pbos_var = tk.BooleanVar(value=self.saved_settings.get("sign_pbos", True))
         self.force_rebuild_var = tk.BooleanVar(value=self.saved_settings.get("force_rebuild", False))
         self.preflight_before_build_var = tk.BooleanVar(value=self.saved_settings.get("preflight_before_build", False))
@@ -488,6 +489,7 @@ class RaGPboBuilderApp(tk.Tk):
         ttk.Label(options, text="Safety", style="FieldMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         self._add_checkbutton(options, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
         self._add_checkbutton(options, "Preflight before build", self.preflight_before_build_var, 1, 2, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.", columnspan=2)
+        self._add_checkbutton(options, "Rewrite RVMAT", self.rewrite_rvmat_texture_refs_var, 1, 4, "Rewrite .png/.tga texture references to .paa inside staged .rvmat files. Only rewrites a reference when the matching .paa exists in staging. Source files are not modified.")
         ttk.Label(options, text="Performance", style="FieldMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 2), padx=(0, 14))
         max_frame = ttk.Frame(options, style="Card.TFrame")
         max_frame.grid(row=2, column=1, columnspan=3, sticky="w")
@@ -1089,6 +1091,7 @@ class RaGPboBuilderApp(tk.Tk):
             "use_binarize": bool(self.use_binarize_var.get()),
             "convert_config": bool(self.convert_config_var.get()),
             "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
+            "rewrite_rvmat_texture_refs": bool(self.rewrite_rvmat_texture_refs_var.get()),
             "sign_pbos": bool(self.sign_pbos_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
@@ -1199,6 +1202,8 @@ class RaGPboBuilderApp(tk.Tk):
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
             "exclude_patterns": self.exclude_patterns_var.get().strip(),
+            "rewrite_rvmat_texture_refs": bool(self.rewrite_rvmat_texture_refs_var.get()),
+            "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()),
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
             "preflight_check_risky_paths": bool(self.preflight_check_risky_paths_var.get()),
@@ -1273,6 +1278,7 @@ class RaGPboBuilderApp(tk.Tk):
             "use_binarize": bool(self.use_binarize_var.get()),
             "convert_config": bool(self.convert_config_var.get()),
             "update_paa_from_sources": bool(self.update_paa_from_sources_var.get()),
+            "rewrite_rvmat_texture_refs": bool(self.rewrite_rvmat_texture_refs_var.get()),
             "sign_pbos": bool(self.sign_pbos_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),

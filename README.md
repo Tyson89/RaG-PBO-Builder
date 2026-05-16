@@ -22,6 +22,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Convert `config.cpp` files to `config.bin`
 - Support nested `config.cpp` files inside subfolders
 - Update missing or stale `.paa` files from newer `.png`/`.tga` source textures during builds
+- Rewrite `.png`/`.tga` texture references to `.paa` inside staged `.rvmat` files during builds
 - Sign PBOs with `DSSignFile.exe`
 - Copy the matching `.bikey` into the `Keys` folder
 - Skip unchanged addons to save build time
@@ -189,6 +190,7 @@ RaG PBO Builder can handle the main DayZ addon build steps in one place:
 - Stage selected addon files
 - Apply exclude patterns
 - Optionally update missing or stale `.paa` files from `.png`/`.tga` sources in the staging folder
+- Optionally rewrite `.png`/`.tga` texture references to `.paa` inside staged `.rvmat` files
 - Binarize `.p3d` files when enabled
 - Preserve original `.p3d` files when Binarize does not output them
 - Convert root and nested `config.cpp` files to `config.bin`
@@ -198,6 +200,8 @@ RaG PBO Builder can handle the main DayZ addon build steps in one place:
 - Publish the final PBO/signature set safely
 
 `Update PAA` uses DayZ Tools `ImageToPAA.exe`. It writes converted `.paa` files into the staging folder only; source `.paa`, `.png`, and `.tga` files are not overwritten.
+
+`Rewrite RVMAT` retargets `.png`/`.tga` texture references to `.paa` inside staged `.rvmat` files before Binarize runs. It needs no DayZ Tools executable, edits the staging copy only, skips already-rapified `.rvmat` files, and rewrites a reference only when the matching `.paa` exists in staging, so deliberately-source and dangling references are left untouched. Pair it with `Update PAA` so the `.paa` files exist when references are rewritten.
 
 Excluded `.p3d` and excluded `config.cpp` files are respected during staging, fallback checks, and config conversion.
 

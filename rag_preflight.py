@@ -51,6 +51,9 @@ P3D_INTERNAL_REFERENCE_REGEX = re.compile(
 PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset")
 RISKY_REFERENCE_EXTENSIONS = {".paa", ".rvmat", ".p3d", ".wss", ".ogg", ".wav", ".emat", ".edds", ".ptc", ".bisurf"}
 SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga", ".psd"}
+# The build's "Rewrite RVMAT" / "Update PAA" steps only handle these source
+# formats, so preflight may only assume a .paa will exist for these.
+REWRITABLE_SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga"}
 MODDED_CLASS_INHERITANCE_REGEX = re.compile(
     r"^\s*modded\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:(extends)\s+([A-Za-z_][A-Za-z0-9_]*)|(:)\s*([A-Za-z_][A-Za-z0-9_]*))",
     re.IGNORECASE | re.MULTILINE,
@@ -857,7 +860,7 @@ def preflight_check_cfgmods(config_cpp, addon_name, addon_source_dir, project_ro
             result.warning(log, f"{folder} exists but is not referenced by {module_name} files[] in CfgMods: {addon_name}")
 
 
-def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True):
+def preflight_scan_references(file_path, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions=None, script_checks_enabled=True, rewrite_rvmat_refs=False, update_paa_from_sources=False):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             content = file.read()
@@ -895,7 +898,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
         report_reference_status(ref, file_path, addon_source_dir, project_root, extra_patterns, result, log, "error", "referenced file", line_number)
 
     if ext == ".rvmat":
-        preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen)
+        preflight_scan_rvmat_textures(file_path, scan_content, addon_source_dir, project_root, extra_patterns, result, log, seen, rewrite_rvmat_refs, update_paa_from_sources)
 
 
 def preflight_scan_script_modded_classes(file_path, content, addon_source_dir, result, log):
@@ -1093,7 +1096,7 @@ def preflight_scan_script_sanity(file_path, content, addon_source_dir, result, l
         result.warning(log, f"Unclosed '{opened}' in script file at {source_location}.")
 
 
-def preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, seen=None):
+def preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_root, extra_patterns, result, log, seen=None, rewrite_rvmat_refs=False, update_paa_from_sources=False):
     seen = seen if seen is not None else set()
     rel_file = os.path.relpath(file_path, addon_source_dir).replace(os.sep, WIN_SEP)
 
@@ -1110,6 +1113,20 @@ def preflight_scan_rvmat_textures(file_path, content, addon_source_dir, project_
         ext = os.path.splitext(ref)[1].lower()
 
         if ext in SOURCE_TEXTURE_EXTENSIONS:
+            if rewrite_rvmat_refs and ext in REWRITABLE_SOURCE_TEXTURE_EXTENSIONS:
+                paa_ref = os.path.splitext(ref)[0] + ".paa"
+                _, paa_status = resolve_reference_path(paa_ref, addon_source_dir, project_root)
+                _, source_status = resolve_reference_path(ref, addon_source_dir, project_root)
+                # Mirror the build's conservative rewrite: the reference is only
+                # retargeted to .paa when that .paa will exist in staging, i.e.
+                # it already exists in source, or Update PAA will generate it
+                # from the source texture during the build.
+                if paa_status == "ok" or (update_paa_from_sources and source_status == "ok"):
+                    result.note(log, f"RVMAT source texture reference will be rewritten to .paa during build in {source_location}: {ref} -> {paa_ref}")
+                    if paa_status == "ok":
+                        report_reference_status(paa_ref, file_path, addon_source_dir, project_root, extra_patterns, result, log, "error", "RVMAT texture", line_number)
+                    continue
+
             result.warning(log, f"RVMAT references a source texture format instead of .paa in {source_location}: {ref}")
 
         report_reference_status(ref, file_path, addon_source_dir, project_root, extra_patterns, result, log, "error", "RVMAT texture", line_number)
@@ -2178,6 +2195,8 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
     project_root = settings.get("project_root", DEFAULT_PROJECT_ROOT)
     extra_patterns = parse_exclude_patterns(settings.get("exclude_patterns", ""))
     preflight_checks = get_preflight_check_settings(settings)
+    rewrite_rvmat_refs = bool(settings.get("rewrite_rvmat_texture_refs", False))
+    update_paa_from_sources = bool(settings.get("update_paa_from_sources", False))
 
     log("")
     log("=" * 80)
@@ -2263,7 +2282,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
                 ext = os.path.splitext(file)[1].lower()
 
                 if ext in PREFLIGHT_TEXT_EXTENSIONS:
-                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"])
+                    preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"], rewrite_rvmat_refs, update_paa_from_sources)
                 elif ext == ".p3d" and preflight_checks["p3d_internal"]:
                     preflight_scan_p3d_internal_references(full, addon_source_dir, project_root, extra_patterns, result, log)
 

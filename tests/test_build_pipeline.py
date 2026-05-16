@@ -6,6 +6,7 @@ from rag_build_pipeline import (
     ensure_p3d_files_in_staging,
     get_effective_pbo_prefix,
     has_binarizable_p3d_files,
+    rewrite_staging_rvmat_texture_refs,
 )
 
 
@@ -141,3 +142,53 @@ def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, mo
     assert "config.cpp" in names
     assert "data\\script.c" in names
     assert "data\\notes.txt" not in names
+
+
+def test_rewrite_rvmat_retargets_refs_only_when_paa_exists(tmp_path):
+    staging = tmp_path / "staging"
+    data = staging / "data"
+    data.mkdir(parents=True)
+    (data / "wall_co.paa").write_bytes(b"paa")
+    (data / "wall_nohq.paa").write_bytes(b"paa")
+    # No .paa generated for the smdi map; its reference must be left as-is.
+    rvmat = data / "wall.rvmat"
+    rvmat.write_text(
+        'class Stage1\n'
+        '{\n'
+        '    texture="MyMod\\data\\wall_co.png";\n'
+        '};\n'
+        'class Stage2\n'
+        '{\n'
+        '    texture="data\\wall_nohq.tga";\n'
+        '};\n'
+        'class Stage3\n'
+        '{\n'
+        '    texture="MyMod\\data\\wall_smdi.tga";\n'
+        '};\n',
+        encoding="utf-8",
+    )
+
+    logs = []
+    rewritten = rewrite_staging_rvmat_texture_refs(str(staging), logs.append, [])
+
+    assert rewritten == 1
+    text = rvmat.read_text(encoding="utf-8")
+    assert 'texture="MyMod\\data\\wall_co.paa";' in text
+    assert 'texture="data\\wall_nohq.paa";' in text
+    assert 'texture="MyMod\\data\\wall_smdi.tga";' in text
+
+
+def test_rewrite_rvmat_skips_rapified_files(tmp_path):
+    staging = tmp_path / "staging"
+    data = staging / "data"
+    data.mkdir(parents=True)
+    (data / "wall_co.paa").write_bytes(b"paa")
+    rvmat = data / "wall.rvmat"
+    original = b"\x00raP" + b'texture="data\\wall_co.png";'
+    rvmat.write_bytes(original)
+
+    logs = []
+    rewritten = rewrite_staging_rvmat_texture_refs(str(staging), logs.append, [])
+
+    assert rewritten == 0
+    assert rvmat.read_bytes() == original
