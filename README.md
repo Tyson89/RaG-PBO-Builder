@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.7.20 Beta
+**Version:** 0.8.0 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 

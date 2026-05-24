@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 Beta
+
+- Promoted the current Builder and Inspector release line to `0.8.0 Beta`.
+- Added config include staging for `CfgConvert`, so excluded `.hpp` include files can still be used to build `config.bin` without being packed as source.
+- Kept the `0.7.20 Beta` terrain `worldName` prefix handling and ODOL `.p3d` Binarize protection in this release.
+
 ## 0.7.20 Beta
 
 - Added support for common project-relative terrain `worldName` paths, allowing layouts like `outpost\world\outpost.wrp` to imply the packed PBO prefix when no `$PBOPREFIX$` file exists.
