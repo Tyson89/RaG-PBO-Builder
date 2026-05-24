@@ -3,6 +3,7 @@ from rag_build_pipeline import (
     build_all,
     copy_source_to_staging,
     detect_addon_targets,
+    ensure_config_include_files_in_staging,
     ensure_p3d_files_in_staging,
     get_effective_pbo_prefix,
     has_binarizable_p3d_files,
@@ -86,6 +87,40 @@ def test_only_odol_p3ds_do_not_require_binarize(tmp_path):
     (source / "packed.p3d").write_bytes(b"ODOL already binarized")
 
     assert has_binarizable_p3d_files(str(source), []) is False
+
+
+def test_config_includes_are_copied_to_staging_even_when_excluded(tmp_path):
+    source = tmp_path / "source"
+    staging = tmp_path / "staging"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    (source / "config.cpp").write_text(
+        """
+class CfgWorlds
+{
+    #include "cfgNavmesh.hpp"
+    // #include "commented.hpp"
+};
+""",
+        encoding="utf-8",
+    )
+    (source / "cfgNavmesh.hpp").write_text('#include "nested/cfgNames.hpp"\n', encoding="utf-8")
+    (nested / "cfgNames.hpp").write_text("class Names {};\n", encoding="utf-8")
+    (source / "commented.hpp").write_text("class Commented {};\n", encoding="utf-8")
+
+    copy_source_to_staging(str(source), str(staging), ["*.hpp"], None, True)
+
+    assert (staging / "config.cpp").is_file()
+    assert not (staging / "cfgNavmesh.hpp").exists()
+
+    logs = []
+    copied = ensure_config_include_files_in_staging(str(source), str(staging), str(tmp_path), logs.append, ["*.hpp"])
+
+    assert copied == 2
+    assert (staging / "cfgNavmesh.hpp").read_text(encoding="utf-8") == '#include "nested/cfgNames.hpp"\n'
+    assert (staging / "nested" / "cfgNames.hpp").read_text(encoding="utf-8") == "class Names {};\n"
+    assert not (staging / "commented.hpp").exists()
+    assert "Copied config include needed for CfgConvert: cfgNavmesh.hpp" in "\n".join(logs)
 
 
 def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, monkeypatch):

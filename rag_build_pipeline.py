@@ -2,6 +2,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -27,6 +28,7 @@ from rag_builder_common import (
 )
 from rag_builder_storage import get_app_data_dir, load_build_cache, save_build_cache
 from rag_pbo_writer import pack_pbo, pbo_entry_bytes_match_file, verify_packed_pbo
+from rag_config_tools import strip_cpp_comments
 from rag_preflight import (
     TERRAIN_SOURCE_FOLDER_NAMES,
     collect_config_cpp_files,
@@ -36,6 +38,7 @@ from rag_preflight import (
     infer_terrain_pbo_prefix_from_worldname,
     is_path_inside,
     normalize_reference_path,
+    resolve_config_include_path,
     resolve_reference_path,
     run_preflight_for_targets,
 )
@@ -265,6 +268,90 @@ def ensure_config_cpp_files_in_staging(source_dir, staging_dir, log, extra_patte
         log("No included config.cpp files found while ensuring configs in staging.")
     if skipped_dirs:
         log(f"Skipped {skipped_dirs} excluded folder(s) while ensuring config.cpp files.")
+    return copied
+
+
+def collect_config_include_files(config_files, source_dir, project_root):
+    include_pattern = re.compile(r"^\s*#include\s+[\"<]([^\">]+)[\">]", re.IGNORECASE | re.MULTILINE)
+    include_files = []
+    seen = set()
+
+    def visit(config_file):
+        try:
+            path = Path(config_file).resolve(strict=False)
+        except Exception:
+            path = Path(config_file)
+
+        key = os.path.normcase(str(path))
+
+        if key in seen:
+            return
+
+        seen.add(key)
+
+        try:
+            raw_content = Path(config_file).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return
+
+        content = strip_cpp_comments(raw_content, preserve_lines=True)
+
+        for match in include_pattern.finditer(content):
+            include_path = resolve_config_include_path(match.group(1).strip(), str(path), source_dir, project_root)
+
+            if include_path and os.path.isfile(include_path):
+                include_files.append(include_path)
+                visit(include_path)
+
+    for config_file in config_files:
+        visit(config_file)
+
+    unique = []
+    emitted = set()
+
+    for include_file in include_files:
+        key = os.path.normcase(os.path.abspath(include_file))
+
+        if key in emitted:
+            continue
+
+        emitted.add(key)
+        unique.append(include_file)
+
+    unique.sort(key=lambda path: os.path.normcase(os.path.abspath(path)))
+    return unique
+
+
+def ensure_config_include_files_in_staging(source_dir, staging_dir, project_root, log, extra_patterns=None):
+    source_configs = collect_config_cpp_files(source_dir, extra_patterns)
+
+    if not source_configs:
+        return 0
+
+    include_files = collect_config_include_files(source_configs, source_dir, project_root)
+    copied = already_present = outside_source = 0
+
+    for include_file in include_files:
+        if not is_path_inside(include_file, source_dir):
+            outside_source += 1
+            log(f"WARNING: Config include is outside the addon source folder and may not resolve from staging: {include_file}")
+            continue
+
+        rel = os.path.relpath(include_file, source_dir)
+        target_file = os.path.join(staging_dir, rel)
+
+        if os.path.isfile(target_file) and files_are_same_for_staging(include_file, target_file, True):
+            already_present += 1
+            continue
+
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        shutil.copy2(include_file, target_file)
+        copied += 1
+        log(f"Copied config include needed for CfgConvert: {rel.replace(os.sep, WIN_SEP)}")
+
+    if include_files:
+        log(f"Config include staging: copied={copied}, already_present={already_present}, outside_source={outside_source}")
+
     return copied
 
 
@@ -1346,6 +1433,7 @@ def build_all(settings, log, progress_callback):
                     summary["p3d_fallbacks"] += fallback_count
             if convert_config:
                 ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
+                ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclude_pattern_list)
                 run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
             verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log, exclude_pattern_list)
             log(f"PBO Name:   {os.path.basename(job['output_pbo'])}")
