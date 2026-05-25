@@ -25,6 +25,7 @@ from rag_builder_common import (
     should_skip_dir,
     should_skip_file,
     source_file_should_be_staged,
+    try_relpath,
 )
 from rag_builder_storage import get_app_data_dir, load_build_cache, save_build_cache
 from rag_pbo_writer import pack_pbo, pbo_entry_bytes_match_file, verify_packed_pbo
@@ -154,12 +155,23 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
     expected = set()
     copied = updated = unchanged = removed = skipped_odol_p3d = 0
     for root, dirs, files in os.walk(source_dir):
+        rel_root = try_relpath(root, source_dir)
+        if not rel_root:
+            if log:
+                log(f"WARNING: Skipped external folder during staging because it is on a different drive than the source: {root}")
+            dirs[:] = []
+            continue
+
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
             if not source_file_should_be_staged(file, extra_patterns):
                 continue
             source_file = os.path.join(root, file)
-            rel = os.path.relpath(source_file, source_dir)
+            rel = try_relpath(source_file, source_dir)
+            if not rel:
+                if log:
+                    log(f"WARNING: Skipped external file during staging because it is on a different drive than the source: {source_file}")
+                continue
             if skip_odol_p3d and file.lower().endswith(".p3d") and is_odol_p3d(source_file):
                 skipped_odol_p3d += 1
                 continue
@@ -176,7 +188,12 @@ def copy_source_to_staging(source_dir, staging_dir, extra_patterns=None, log=Non
     for root, dirs, files in os.walk(staging_dir, topdown=False):
         for file in files:
             staged_file = os.path.join(root, file)
-            rel = os.path.relpath(staged_file, staging_dir).replace(os.sep, WIN_SEP).lower()
+            rel = try_relpath(staged_file, staging_dir)
+            if not rel:
+                if log:
+                    log(f"WARNING: Left external staged file untouched because it is on a different drive than staging: {staged_file}")
+                continue
+            rel = rel.replace(os.sep, WIN_SEP).lower()
             if rel not in expected:
                 os.remove(staged_file)
                 removed += 1
@@ -198,14 +215,20 @@ def overlay_tree(source_dir, destination_dir, skip_extensions=None, log=None):
     skip_extensions = {ext.lower() for ext in (skip_extensions or set())}
     copied = skipped = 0
     for root, dirs, files in os.walk(source_dir):
-        rel_root = os.path.relpath(root, source_dir)
+        rel_root = try_relpath(root, source_dir)
+        if not rel_root:
+            if log:
+                log(f"WARNING: Skipped external Binarize output folder because it is on a different drive than the output root: {root}")
+            dirs[:] = []
+            continue
         target_root = destination_dir if rel_root == "." else os.path.join(destination_dir, rel_root)
         os.makedirs(target_root, exist_ok=True)
         for file in files:
             if os.path.splitext(file)[1].lower() in skip_extensions:
                 skipped += 1
                 if log:
-                    rel_file = os.path.relpath(os.path.join(root, file), source_dir).replace(os.sep, WIN_SEP)
+                    rel_file = try_relpath(os.path.join(root, file), source_dir)
+                    rel_file = rel_file.replace(os.sep, WIN_SEP) if rel_file else os.path.join(root, file)
                     log(f"Skipped Binarize overlay for protected file: {rel_file}")
                 continue
             shutil.copy2(os.path.join(root, file), os.path.join(target_root, file))
@@ -219,6 +242,12 @@ def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=Non
     copied = already_present = skipped = 0
     os.makedirs(staging_dir, exist_ok=True)
     for root, dirs, files in os.walk(source_dir):
+        rel_root = try_relpath(root, source_dir)
+        if not rel_root:
+            log(f"WARNING: Skipped external folder during P3D fallback because it is on a different drive than the source: {root}")
+            dirs[:] = []
+            continue
+
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for file in files:
             if not file.lower().endswith(".p3d"):
@@ -227,7 +256,10 @@ def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=Non
                 skipped += 1
                 continue
             source_file = os.path.join(root, file)
-            rel = os.path.relpath(source_file, source_dir)
+            rel = try_relpath(source_file, source_dir)
+            if not rel:
+                log(f"WARNING: Skipped external P3D fallback because it is on a different drive than the source: {source_file}")
+                continue
             target_file = os.path.join(staging_dir, rel)
             if os.path.isfile(target_file):
                 already_present += 1
@@ -249,6 +281,12 @@ def ensure_config_cpp_files_in_staging(source_dir, staging_dir, log, extra_patte
     copied = skipped_dirs = 0
     os.makedirs(staging_dir, exist_ok=True)
     for root, dirs, files in os.walk(source_dir):
+        rel_root = try_relpath(root, source_dir)
+        if not rel_root:
+            log(f"WARNING: Skipped external folder while ensuring configs because it is on a different drive than the source: {root}")
+            dirs[:] = []
+            continue
+
         before = len(dirs)
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         skipped_dirs += before - len(dirs)
@@ -256,7 +294,10 @@ def ensure_config_cpp_files_in_staging(source_dir, staging_dir, log, extra_patte
             if file.lower() != "config.cpp":
                 continue
             source_file = os.path.join(root, file)
-            rel = os.path.relpath(source_file, source_dir)
+            rel = try_relpath(source_file, source_dir)
+            if not rel:
+                log(f"WARNING: Skipped external config.cpp because it is on a different drive than the source: {source_file}")
+                continue
             target_file = os.path.join(staging_dir, rel)
             os.makedirs(os.path.dirname(target_file), exist_ok=True)
             shutil.copy2(source_file, target_file)
@@ -337,7 +378,11 @@ def ensure_config_include_files_in_staging(source_dir, staging_dir, project_root
             log(f"WARNING: Config include is outside the addon source folder and may not resolve from staging: {include_file}")
             continue
 
-        rel = os.path.relpath(include_file, source_dir)
+        rel = try_relpath(include_file, source_dir)
+        if not rel:
+            outside_source += 1
+            log(f"WARNING: Config include is on a different drive than the addon source and may not resolve from staging: {include_file}")
+            continue
         target_file = os.path.join(staging_dir, rel)
 
         if os.path.isfile(target_file) and files_are_same_for_staging(include_file, target_file, True):
@@ -915,7 +960,10 @@ def compute_addon_state_hash(source_dir, prefix, settings, extra_patterns=None, 
                 continue
 
             full = os.path.join(root, fname)
-            rel = os.path.relpath(full, source_dir).replace(os.sep, WIN_SEP).lower()
+            rel = try_relpath(full, source_dir)
+            if not rel:
+                continue
+            rel = rel.replace(os.sep, WIN_SEP).lower()
             try:
                 stat = os.stat(full)
             except OSError:
@@ -951,7 +999,8 @@ def verify_pack_source_before_packing(original_source_dir, pack_source, convert_
                 config_bin_count += 1
 
     if remaining_config_cpp:
-        rel = os.path.relpath(remaining_config_cpp[0], pack_source).replace(os.sep, WIN_SEP)
+        rel = try_relpath(remaining_config_cpp[0], pack_source)
+        rel = rel.replace(os.sep, WIN_SEP) if rel else remaining_config_cpp[0]
         raise BuildError(f"Post-conversion verification failed. config.cpp is still in pack source: {rel}")
 
     if config_bin_count == 0:
@@ -970,7 +1019,8 @@ def worldname_to_pbo_entry_name(world_ref, prefix, addon_source_dir, project_roo
     resolved, status = resolve_reference_path(normalized_ref, addon_source_dir, project_root)
 
     if status == "ok" and is_path_inside(resolved, addon_source_dir):
-        return os.path.relpath(resolved, addon_source_dir).replace(os.sep, WIN_SEP)
+        rel = try_relpath(resolved, addon_source_dir)
+        return rel.replace(os.sep, WIN_SEP) if rel else ""
 
     return ""
 
@@ -990,7 +1040,10 @@ def verify_packed_wrp_entries(pbo_path, pack_source, original_source_dir, prefix
     wrp_entry_names = set()
 
     for wrp_file in wrp_files:
-        rel_wrp = os.path.relpath(wrp_file, pack_source).replace(os.sep, WIN_SEP)
+        rel_wrp = try_relpath(wrp_file, pack_source)
+        if not rel_wrp:
+            raise BuildError(f"Post-pack WRP verification failed. WRP is outside the packed source drive: {wrp_file}")
+        rel_wrp = rel_wrp.replace(os.sep, WIN_SEP)
         key = rel_wrp.lower()
         entry = entries_by_name.get(key)
 
@@ -1139,14 +1192,16 @@ def run_cfgconvert_to_bin(staging_dir, cfgconvert_exe, log, extra_patterns=None)
     if not config_files:
         log("No included config.cpp found. Skipping CPP to BIN.")
         return
-    config_files.sort(key=lambda path: os.path.relpath(path, staging_dir).lower())
+    config_files.sort(key=lambda path: (try_relpath(path, staging_dir) or path).lower())
     log("")
     log(f"Converting {len(config_files)} config.cpp file(s) to config.bin:")
     for config_cpp in config_files:
         config_dir = os.path.dirname(config_cpp)
         config_bin = os.path.join(config_dir, "config.bin")
-        rel_config = os.path.relpath(config_cpp, staging_dir).replace(os.sep, WIN_SEP)
-        rel_bin = os.path.relpath(config_bin, staging_dir).replace(os.sep, WIN_SEP)
+        rel_config = try_relpath(config_cpp, staging_dir)
+        rel_config = rel_config.replace(os.sep, WIN_SEP) if rel_config else config_cpp
+        rel_bin = try_relpath(config_bin, staging_dir)
+        rel_bin = rel_bin.replace(os.sep, WIN_SEP) if rel_bin else config_bin
         if os.path.isfile(config_bin):
             os.remove(config_bin)
         cmd = [cfgconvert_exe, "-bin", "-dst", config_bin, config_cpp]
@@ -1183,7 +1238,9 @@ def collect_paa_update_jobs(source_dir, staging_dir, extra_patterns=None):
                 continue
 
             source_file = os.path.join(root, file)
-            rel_source = os.path.relpath(source_file, source_dir)
+            rel_source = try_relpath(source_file, source_dir)
+            if not rel_source:
+                continue
             rel_paa = os.path.splitext(rel_source)[0] + ".paa"
             target_paa = os.path.join(staging_dir, rel_paa)
 

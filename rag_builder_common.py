@@ -80,6 +80,17 @@ def normalize_working_dir(project_root):
     return value
 
 
+def try_relpath(path, start):
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return ""
+
+
+def path_is_same_mount(path, start):
+    return bool(try_relpath(path, start))
+
+
 def get_safe_temp_name(name):
     safe = name.strip() if name else "addon"
     safe = safe.replace("/", "_").replace(WIN_SEP, "_").replace(":", "_")

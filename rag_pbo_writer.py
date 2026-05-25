@@ -9,6 +9,7 @@ from rag_builder_common import (
     WIN_SEP,
     ZERO,
     safe_ascii,
+    try_relpath,
     should_skip_dir,
     should_skip_file,
 )
@@ -22,12 +23,22 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     files = []
     for root, dirs, filenames in os.walk(source_dir):
+        rel_root = try_relpath(root, source_dir)
+        if not rel_root:
+            log(f"WARNING: Skipped external folder while packing because it is on a different drive than the pack source: {root}")
+            dirs[:] = []
+            continue
+
         dirs[:] = [d for d in dirs if not should_skip_dir(d, extra_patterns)]
         for fname in filenames:
             if should_skip_file(fname, extra_patterns):
                 continue
             full = os.path.join(root, fname)
-            rel = os.path.relpath(full, source_dir).replace(os.sep, WIN_SEP)
+            rel = try_relpath(full, source_dir)
+            if not rel:
+                log(f"WARNING: Skipped external file while packing because it is on a different drive than the pack source: {full}")
+                continue
+            rel = rel.replace(os.sep, WIN_SEP)
             files.append((rel, full, os.path.getsize(full)))
     files.sort(key=lambda item: item[0].lower())
     header = bytearray()

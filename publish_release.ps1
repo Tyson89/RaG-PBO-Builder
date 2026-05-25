@@ -75,12 +75,43 @@ function Get-RepoUrl {
     return ""
 }
 
+function Get-ReleasePackagePath {
+    param([string]$Version)
+
+    $SafeVersion = $Version -replace "[^A-Za-z0-9._-]+", "_"
+    return Join-Path (Join-Path $ProjectRoot "releases") "RaG_PBO_Tools_$SafeVersion.zip"
+}
+
+function Write-ReleasePackageSummary {
+    param([string]$ZipPath)
+
+    $BuilderExe = Join-Path (Join-Path $ProjectRoot "dist") "RaG_PBO_Builder.exe"
+    $InspectorExe = Join-Path (Join-Path $ProjectRoot "dist") "RaG_PBO_Inspector.exe"
+
+    Write-Host ""
+    Write-Host "Local build outputs:"
+
+    foreach ($Path in @($BuilderExe, $InspectorExe, $ZipPath)) {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            throw "Expected release output missing: $Path"
+        }
+
+        $Item = Get-Item -LiteralPath $Path
+        $Hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
+        Write-Host "  $($Item.FullName)"
+        Write-Host "    Size:    $($Item.Length) bytes"
+        Write-Host "    Updated: $($Item.LastWriteTime)"
+        Write-Host "    SHA256:  $($Hash.Hash.ToLowerInvariant())"
+    }
+}
+
 Push-Location $ProjectRoot
 try {
     $Version = Get-AppVersion
     $VersionToken = ConvertTo-VersionToken $Version
     $Tag = "v$VersionToken"
     $RepoUrl = Get-RepoUrl $Remote
+    $ZipPath = Get-ReleasePackagePath $Version
 
     Write-Host "RaG PBO Tools release publish"
     Write-Host "Version: $Version"
@@ -114,8 +145,14 @@ try {
         & (Join-Path $ProjectRoot "package_release.ps1")
     }
 
+    Write-ReleasePackageSummary $ZipPath
+
     Write-Host "Checking release readiness..."
     & (Join-Path $ProjectRoot "check_release_ready.ps1") -SkipPackage
+
+    $HeadSha = (& git rev-parse --short HEAD).Trim()
+    Write-Host ""
+    Write-Host "Publishing commit: $HeadSha"
 
     $LocalTagExists = $false
     & git rev-parse -q --verify "refs/tags/$Tag" *> $null
@@ -157,6 +194,8 @@ try {
 
     Write-Host ""
     Write-Host "Release publish triggered."
+    Write-Host "GitHub will build and upload its own release zip from commit $HeadSha."
+    Write-Host "The local zip above is only a verification package unless you upload it manually."
     if ($RepoUrl) {
         Write-Host "Actions:  $RepoUrl/actions"
         Write-Host "Release:  $RepoUrl/releases/tag/$Tag"
