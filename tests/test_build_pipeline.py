@@ -9,6 +9,7 @@ from rag_build_pipeline import (
     ensure_config_include_files_in_staging,
     ensure_p3d_files_in_staging,
     get_effective_pbo_prefix,
+    get_build_failure_diagnostics,
     has_binarizable_p3d_files,
     parse_binarize_addon_folders,
     parse_steam_libraryfolders,
@@ -262,6 +263,18 @@ def test_hidden_text_subprocess_replaces_undecodable_output(monkeypatch):
     assert result.stdout == "tool output with replacement"
     assert captured["errors"] == "replace"
     assert captured["text"] is True
+
+
+def test_build_failure_diagnostics_explain_common_failures():
+    diagnostics = get_build_failure_diagnostics(
+        "WRP Binarize verification failed. Binarize produced a suspiciously small WRP",
+        ["Cannot include file cfgNavmesh.hpp", "Binarize access violation 0xC0000005"],
+    )
+    titles = [item["title"] for item in diagnostics]
+
+    assert "Config include could not be resolved" in titles
+    assert "Terrain WRP was not built correctly" in titles
+    assert "Binarize crashed with an access violation" in titles
 
 
 def test_suspicious_tiny_binarized_wrp_fails_build(tmp_path):

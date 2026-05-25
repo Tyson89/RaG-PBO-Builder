@@ -47,6 +47,7 @@ BUILDER_TEMP_CHILDREN = {"addons", "preflight", "staging", "binarized", "configs
 PAA_SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga"}
 WRP_SUSPICIOUS_SOURCE_SIZE = 1024 * 1024
 WRP_SUSPICIOUS_MIN_RATIO = 0.5
+DIAGNOSTIC_CONTEXT_LIMIT = 500
 
 def get_available_logical_threads():
     process_cpu_count = getattr(os, "process_cpu_count", None)
@@ -64,6 +65,110 @@ def get_available_logical_threads():
         except Exception:
             pass
     return os.cpu_count() or 8
+
+
+def get_build_failure_diagnostics(error_message, log_lines=None):
+    text = "\n".join([str(error_message or "")] + [str(line) for line in (log_lines or [])])
+    lower = text.lower()
+    diagnostics = []
+
+    def add(title, cause, fix):
+        key = title.lower()
+        if any(item["title"].lower() == key for item in diagnostics):
+            return
+        diagnostics.append({"title": title, "cause": cause, "fix": fix})
+
+    if "cannot include file" in lower or "preprocessor failed" in lower:
+        add(
+            "Config include could not be resolved",
+            "Binarize or CfgConvert tried to read a #include file that was missing from the path it was using.",
+            "Check the include path in config.cpp and make sure the referenced .hpp exists where the config expects it. If the file is intentionally excluded from the PBO, keep it available as a build-time include.",
+        )
+
+    if "suspiciously small wrp" in lower or "did not output required wrp" in lower or "cannot load world wrp" in lower:
+        add(
+            "Terrain WRP was not built correctly",
+            "Binarize did not produce a valid world file. This usually means it could not resolve terrain object/config dependencies or the world path/prefix context was wrong.",
+            "Verify Project root, PBO prefix, and worldName. For terrain projects, add required extracted object/config folders in Options > Binarize addon folders, for example P:\\dz, P:\\ca, and custom object packs.",
+        )
+
+    if "worldname" in lower and ("missing pbo entry" in lower or "non-wrp" in lower or "effective pbo prefix" in lower):
+        add(
+            "worldName does not match the packed WRP path",
+            "The config points to a WRP path that does not line up with the PBO prefix and the WRP entry that will be packed.",
+            "Make the PBO prefix and config worldName resolve to the same in-PBO WRP path. Common modular map layouts may need a $PBOPREFIX$ file or a project-relative worldName.",
+        )
+
+    if "0xc0000005" in lower or "access violation" in lower:
+        add(
+            "Binarize crashed with an access violation",
+            "DayZ Tools Binarize crashed internally. A common cause is feeding it already-binarized ODOL P3Ds or malformed source data.",
+            "Run preflight with P3D internal checks enabled. Keep ODOL P3Ds out of Binarize input or rebuild from proper source models when possible.",
+        )
+
+    if "charmap" in lower and "codec" in lower:
+        add(
+            "External tool output used unsupported text bytes",
+            "A DayZ Tools program printed bytes that the Windows text decoder could not read.",
+            "Update to the latest Builder. Newer versions preserve the log by replacing unreadable bytes instead of crashing.",
+        )
+
+    if "cfgconvert failed" in lower or "config syntax check failed" in lower or "error 3 while parsing config" in lower:
+        add(
+            "Config syntax or conversion failed",
+            "CfgConvert could not parse or convert one of the config files.",
+            "Open the file path shown above the CfgConvert output and fix the reported line. Also check active #include files because errors can come from included .hpp fragments.",
+        )
+
+    if "dssignfile failed" in lower or "private key" in lower or "bisign" in lower:
+        add(
+            "Signing failed",
+            "The signing step could not create the expected .bisign file or the selected private key is invalid/missing.",
+            "Check DSSignFile.exe, the .biprivatekey path, write permissions in the output folder, and whether antivirus is locking the generated PBO.",
+        )
+
+    if "imagetopaa failed" in lower:
+        add(
+            "PAA conversion failed",
+            "ImageToPAA could not convert one of the source textures.",
+            "Open the source texture named in the log and verify it is a supported, readable PNG/TGA. Disable Update PAA if the texture should not be converted during packing.",
+        )
+
+    if "path is on mount" in lower or "different drive" in lower or "cross-drive" in lower:
+        add(
+            "Path is outside the expected drive/root",
+            "A referenced file or build path is on a different drive than the source/project root. Some relative-path operations and BI tools are sensitive to this.",
+            "Keep Project Source, Project root, temp, and referenced build inputs under consistent workspace paths where possible. Avoid references that jump to unrelated drives.",
+        )
+
+    if "no addon targets selected" in lower:
+        add(
+            "No addon was selected for build",
+            "The selected Project Source did not produce a build target, or all detected targets were deselected.",
+            "Refresh the addon list and select at least one addon folder. If building a single folder directly, make sure it contains a config.cpp or valid addon content.",
+        )
+
+    return diagnostics
+
+
+def log_build_failure_diagnostics(error_message, log_lines, log):
+    diagnostics = get_build_failure_diagnostics(error_message, log_lines)
+
+    if not diagnostics:
+        return 0
+
+    log("")
+    log("=" * 80)
+    log("Build diagnostics")
+    log("=" * 80)
+
+    for index, item in enumerate(diagnostics, start=1):
+        log(f"{index}. Likely cause: {item['title']}")
+        log(f"   What it means: {item['cause']}")
+        log(f"   Suggested fix: {item['fix']}")
+
+    log("=" * 80)
+    return len(diagnostics)
 
 
 def get_default_max_processes():
@@ -1651,6 +1756,17 @@ def update_staging_paa_from_source_textures(source_dir, staging_dir, imagetopaa_
 
 def build_all(settings, log, progress_callback):
     start = time.time()
+    original_log = log
+    diagnostic_log_lines = []
+
+    def capture_log(message):
+        text = str(message)
+        diagnostic_log_lines.append(text)
+        if len(diagnostic_log_lines) > DIAGNOSTIC_CONTEXT_LIMIT:
+            del diagnostic_log_lines[:-DIAGNOSTIC_CONTEXT_LIMIT]
+        original_log(message)
+
+    log = capture_log
     source_root = os.path.normpath(settings["source_root"])
     output_root = os.path.normpath(settings["output_root_dir"])
     output_addons_dir = os.path.join(output_root, "Addons")
@@ -1838,9 +1954,10 @@ def build_all(settings, log, progress_callback):
                     summary["keys_copied"] += 1
             source_cache[job["folder_name"]] = {"hash": job["state_hash"], "pbo": job["output_pbo"], "updated": datetime.now().isoformat(timespec="seconds")}
             save_build_cache(cache)
-        except Exception:
+        except Exception as error:
             summary["failed"] += 1
             cleanup_output_work_dir(job.get("output_work_dir", ""), log)
+            log_build_failure_diagnostics(str(error), diagnostic_log_lines, log)
             raise
 
     progress_callback(len(targets), len(targets))

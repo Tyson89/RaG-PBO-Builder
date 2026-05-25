@@ -5,6 +5,7 @@
 - Cleaned per-addon output work folders after failed builds so `_rag_build_tmp` is not left behind.
 - Improved DayZ Tools auto-detection by reading Steam library folders instead of only checking the default C-drive install path.
 - Fixed external tool output decoding so Binarize/CfgConvert logs with non-standard Windows bytes no longer crash the Builder.
+- Added build diagnostics that translate common Binarize, CfgConvert, WRP, signing, and path failures into likely causes and suggested fixes.
 
 ## 0.8.0 Beta
 

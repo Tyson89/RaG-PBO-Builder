@@ -31,6 +31,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Use isolated temp folders per addon
 - Keep clean `Addons` and `Keys` output folders
 - Save build logs automatically
+- Show build diagnostics for common Binarize, CfgConvert, WRP, signing, and path failures
 - Run configurable preflight checks before building
 - Preflight checks only files that belong to the selected pack target(s) and are not excluded from the packed PBO
 - Export preflight reports automatically as `.txt` and `.json`
