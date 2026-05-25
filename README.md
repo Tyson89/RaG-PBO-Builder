@@ -19,6 +19,8 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Terrain source/export work folders are not offered as addon build targets when selecting a map/project root
 - Support PBO prefix files such as `$PBOPREFIX$`, `$prefix$`, `$PBOPREFIX$.txt`, and `$prefix$.txt`
 - Binarize `.p3d` files with DayZ Tools
+- Binarize terrain `.wrp` files with project-aware workspace paths
+- Configure extra Binarize addon scan folders for terrain object/config dependencies
 - Convert `config.cpp` files to `config.bin`
 - Support nested `config.cpp` files inside subfolders
 - Update missing or stale `.paa` files from newer `.png`/`.tga` source textures during builds
@@ -102,6 +104,26 @@ Preset behavior:
 - Presets do not change signing, Binarize, CfgConvert, temp, exclude, private key, or preflight settings
 
 This keeps path switching convenient without accidentally changing important build settings.
+
+---
+
+## Terrain WRP Binarize Notes
+
+Terrain WRP builds need more context than normal addon packing. DayZ Tools `Binarize.exe` must be able to find the object configs and models used by the world under the expected workspace paths.
+
+For map projects, set:
+
+```txt
+Project root:
+P:\
+
+Binarize addon folders:
+P:\dz
+P:\ca
+P:\YourTag\YourObjectPack
+```
+
+Use one folder per line. Add only folders that contain extracted addon configs needed by terrain objects. If Binarize produces a tiny WRP, the builder stops instead of packing a broken world.
 
 ---
 

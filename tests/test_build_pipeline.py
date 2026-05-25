@@ -1,3 +1,5 @@
+import os
+
 from pbo_core import read_pbo_archive
 from rag_build_pipeline import (
     build_all,
@@ -7,7 +9,13 @@ from rag_build_pipeline import (
     ensure_p3d_files_in_staging,
     get_effective_pbo_prefix,
     has_binarizable_p3d_files,
+    parse_binarize_addon_folders,
+    prepare_wrp_binarize_source,
+    cleanup_wrp_binarize_source,
+    run_dayz_binarize,
+    validate_binarized_wrp_outputs,
 )
+from rag_builder_common import BuildError
 
 
 def test_detect_addon_targets_skips_terrain_source_folder(tmp_path):
@@ -145,6 +153,124 @@ class CfgWorlds
     assert copied == 1
     assert (staging / "cfgNavmesh.hpp").read_text(encoding="utf-8") == "class CfgNavmesh {};\n"
     assert "Copied external config include needed for Binarize/CfgConvert" in "\n".join(logs)
+
+
+def test_wrp_binarize_source_uses_project_prefix_path(tmp_path, monkeypatch):
+    project_root = tmp_path / "P"
+    source = tmp_path / "source" / "world"
+    staging = tmp_path / "temp" / "staging"
+    project_root.mkdir()
+    source.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    created_links = []
+
+    def fake_create_directory_junction(link_path, target_path, cwd):
+        created_links.append((link_path, target_path, cwd))
+        os.mkdir(link_path)
+        return True, ""
+
+    monkeypatch.setattr("rag_build_pipeline.create_directory_junction", fake_create_directory_junction)
+
+    logs = []
+    binarize_source, context = prepare_wrp_binarize_source(str(staging), str(source), r"outpost\world", str(project_root), logs.append)
+
+    assert binarize_source == str(project_root / "outpost" / "world")
+    assert created_links == [(str(project_root / "outpost" / "world"), str(staging), str(project_root))]
+    assert "project-prefix path" in "\n".join(logs)
+
+    cleanup_wrp_binarize_source(context, logs.append)
+
+    assert not (project_root / "outpost").exists()
+
+
+def test_run_dayz_binarize_uses_project_root_as_binpath(tmp_path, monkeypatch):
+    binarize_exe = tmp_path / "tools" / "binarize.exe"
+    source = tmp_path / "P" / "outpost" / "world"
+    output = tmp_path / "out"
+    temp = tmp_path / "temp"
+    binarize_exe.parent.mkdir(parents=True)
+    source.mkdir(parents=True)
+    temp.mkdir()
+    binarize_exe.write_text("", encoding="utf-8")
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        return Result()
+
+    monkeypatch.setattr("rag_build_pipeline.subprocess.run", fake_run)
+
+    addon_scan = [str(tmp_path / "P"), str(tmp_path / "objects")]
+    run_dayz_binarize(str(source), str(output), str(binarize_exe), str(tmp_path / "P"), str(temp), 1, "", lambda _message: None, "world", addon_scan)
+
+    assert f"-binpath={tmp_path / 'P'}" in captured["cmd"]
+    assert f"-addon={tmp_path / 'P'}" in captured["cmd"]
+    assert f"-addon={tmp_path / 'objects'}" in captured["cmd"]
+    assert captured["cwd"] == str(tmp_path / "P")
+
+
+def test_parse_binarize_addon_folders_accepts_common_separators():
+    folders = parse_binarize_addon_folders("P:\\dz; P:\\custom\n\"P:\\more\"")
+
+    assert folders == [r"P:\dz", r"P:\custom", r"P:\more"]
+
+
+def test_suspicious_tiny_binarized_wrp_fails_build(tmp_path):
+    staging = tmp_path / "staging"
+    binarized = tmp_path / "binarized"
+    staging.mkdir()
+    binarized.mkdir()
+    (staging / "map.wrp").write_bytes(b"S" * (2 * 1024 * 1024))
+    (binarized / "map.wrp").write_bytes(b"B" * 128 * 1024)
+
+    logs = []
+
+    try:
+        validate_binarized_wrp_outputs(str(staging), str(binarized), logs.append, [])
+    except BuildError as error:
+        assert "suspiciously small WRP" in str(error)
+        assert "source WRP will not be packed as a fallback" in str(error)
+        assert "Binarize addon folders" in str(error)
+    else:
+        raise AssertionError("Expected suspicious WRP output to fail build")
+
+    assert (binarized / "map.wrp").exists()
+
+
+def test_missing_binarized_wrp_fails_build(tmp_path):
+    staging = tmp_path / "staging"
+    binarized = tmp_path / "binarized"
+    staging.mkdir()
+    binarized.mkdir()
+    (staging / "map.wrp").write_bytes(b"S" * (2 * 1024 * 1024))
+
+    try:
+        validate_binarized_wrp_outputs(str(staging), str(binarized), lambda _message: None, [])
+    except BuildError as error:
+        assert "did not output required WRP" in str(error)
+    else:
+        raise AssertionError("Expected missing Binarize WRP output to fail build")
+
+
+def test_valid_binarized_wrp_passes_verification(tmp_path):
+    staging = tmp_path / "staging"
+    binarized = tmp_path / "binarized"
+    staging.mkdir()
+    binarized.mkdir()
+    (staging / "map.wrp").write_bytes(b"S" * (2 * 1024 * 1024))
+    (binarized / "map.wrp").write_bytes(b"B" * (1536 * 1024))
+
+    logs = []
+    checked = validate_binarized_wrp_outputs(str(staging), str(binarized), logs.append, [])
+
+    assert checked == 1
+    assert "WRP Binarize verification OK" in "\n".join(logs)
 
 
 def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, monkeypatch):

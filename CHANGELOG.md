@@ -6,6 +6,8 @@
 - Added config include staging for `CfgConvert`, so excluded `.hpp` include files can still be used to build `config.bin` without being packed as source.
 - Staged config `#include` files before Binarize as well, preventing terrain builds from failing when Binarize parses staged configs with excluded `.hpp` includes.
 - Updated preflight reference scanning so config `#include` files are treated as build-time inputs instead of packed runtime references.
+- Added terrain WRP Binarize output verification so suspicious tiny WRP files fail the build instead of being packed.
+- Added configurable Binarize addon scan folders for terrain builds that need object/config folders outside the project root.
 - Added `publish_release.ps1` to push the current version tag and trigger the GitHub Actions release workflow.
 - Kept the `0.7.20 Beta` terrain `worldName` prefix handling and ODOL `.p3d` Binarize protection in this release.
 

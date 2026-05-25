@@ -272,6 +272,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.private_key_var = tk.StringVar(value=self.saved_settings.get("private_key", ""))
         self.project_root_var = tk.StringVar(value=self.saved_settings.get("project_root", DEFAULT_PROJECT_ROOT))
         self.temp_dir_var = tk.StringVar(value=self.saved_settings.get("temp_dir", DEFAULT_TEMP_DIR))
+        self.binarize_addon_folders_var = tk.StringVar(value=self.saved_settings.get("binarize_addon_folders", ""))
         self.exclude_patterns_var = tk.StringVar(value=self.saved_settings.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS))
         self.log_filter_var = tk.StringVar(value=self.saved_settings.get("log_filter", "All"))
         self.preflight_check_required_addons_hints_var = tk.BooleanVar(value=self.saved_settings.get("preflight_check_required_addons_hints", True))
@@ -891,11 +892,16 @@ class RaGPboBuilderApp(tk.Tk):
         self._add_file_row(frame, 4, "Private key", self.private_key_var, self.choose_private_key, "Your .biprivatekey. Never distribute this file.")
         self._add_folder_row(frame, 5, "Project root", self.project_root_var, self.choose_project_root, "Usually P: or your DayZ project drive root.")
         self._add_folder_row(frame, 6, "Temp dir", self.temp_dir_var, self.choose_temp_dir, "Temporary staging folder.")
-        ttk.Label(frame, text="Exclude patterns").grid(row=7, column=0, sticky="nw", pady=5)
+        ttk.Label(frame, text="Binarize addon folders").grid(row=7, column=0, sticky="nw", pady=5)
+        binarize_addon_entry = tk.Text(frame, height=3, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
+        binarize_addon_entry.grid(row=7, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
+        binarize_addon_entry.insert("1.0", self.binarize_addon_folders_var.get())
+        ttk.Label(frame, text="Extra folders Binarize should scan for terrain object configs. Use one path per line.", foreground=GRAPHITE_MUTED, wraplength=520).grid(row=8, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 6))
+        ttk.Label(frame, text="Exclude patterns").grid(row=9, column=0, sticky="nw", pady=5)
         exclude_entry = tk.Text(frame, height=5, bg=GRAPHITE_FIELD, fg=GRAPHITE_TEXT, insertbackground=GRAPHITE_TEXT, selectbackground=GRAPHITE_ACCENT_DARK, selectforeground="#ffffff", relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=GRAPHITE_BORDER, highlightcolor=GRAPHITE_ACCENT, font=("Segoe UI", 10))
-        exclude_entry.grid(row=7, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
+        exclude_entry.grid(row=9, column=1, columnspan=2, sticky="nsew", pady=5, padx=(8, 0))
         exclude_entry.insert("1.0", self.exclude_patterns_var.get())
-        frame.rowconfigure(7, weight=1)
+        frame.rowconfigure(9, weight=1)
 
         preflight_frame = ttk.LabelFrame(container, text="Preflight checks", padding=14)
         preflight_frame.pack(fill="x", pady=(12, 0))
@@ -1027,6 +1033,7 @@ class RaGPboBuilderApp(tk.Tk):
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x", pady=(12, 0))
         def save_and_close():
+            self.binarize_addon_folders_var.set(binarize_addon_entry.get("1.0", "end").strip())
             self.exclude_patterns_var.set(exclude_entry.get("1.0", "end").strip())
             self.save_path_settings()
             close_options_window()
@@ -1100,6 +1107,7 @@ class RaGPboBuilderApp(tk.Tk):
             "private_key": self.private_key_var.get().strip(),
             "project_root": self.project_root_var.get().strip(),
             "temp_dir": self.temp_dir_var.get().strip(),
+            "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
             "exclude_patterns": self.exclude_patterns_var.get().strip(),
             "log_filter": self.log_filter_var.get().strip() if hasattr(self, "log_filter_var") else "All",
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()) if hasattr(self, "preflight_check_required_addons_hints_var") else True,
@@ -1198,6 +1206,7 @@ class RaGPboBuilderApp(tk.Tk):
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
+            "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
             "exclude_patterns": self.exclude_patterns_var.get().strip(),
             "preflight_check_required_addons_hints": bool(self.preflight_check_required_addons_hints_var.get()),
             "preflight_check_texture_freshness": bool(self.preflight_check_texture_freshness_var.get()),
@@ -1283,6 +1292,7 @@ class RaGPboBuilderApp(tk.Tk):
             "private_key": self.private_key_var.get().strip(),
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
+            "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
             "exclude_patterns": self.exclude_patterns_var.get().strip(),
             "max_processes": max_processes,
             "selected_addons": selected,

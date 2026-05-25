@@ -47,6 +47,8 @@ from rag_preflight import (
 TEMP_MARKER_FILE = ".rag_pbo_builder_temp"
 BUILDER_TEMP_CHILDREN = {"addons", "preflight", "staging", "binarized", "configs", "_binarize_textures"}
 PAA_SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga"}
+WRP_SUSPICIOUS_SOURCE_SIZE = 1024 * 1024
+WRP_SUSPICIOUS_MIN_RATIO = 0.5
 
 def get_available_logical_threads():
     process_cpu_count = getattr(os, "process_cpu_count", None)
@@ -236,6 +238,168 @@ def overlay_tree(source_dir, destination_dir, skip_extensions=None, log=None):
 
     if log:
         log(f"Binarize overlay: copied={copied}, skipped={skipped}")
+
+
+def paths_are_same(path_a, path_b):
+    try:
+        return os.path.normcase(os.path.abspath(path_a)) == os.path.normcase(os.path.abspath(path_b))
+    except Exception:
+        return False
+
+
+def prefix_to_path_parts(prefix):
+    return [part for part in normalize_reference_path(prefix).strip(WIN_SEP).split(WIN_SEP) if part]
+
+
+def get_project_prefix_path(project_root, prefix):
+    parts = prefix_to_path_parts(prefix)
+    if not parts:
+        return ""
+    return os.path.join(normalize_working_dir(project_root), *parts)
+
+
+def create_directory_junction(link_path, target_path, cwd):
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", link_path, target_path],
+            cwd=cwd if os.path.isdir(cwd) else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=get_subprocess_creationflags(),
+            startupinfo=get_hidden_startupinfo(),
+        )
+        return result.returncode == 0, result.stdout.strip()
+
+    try:
+        os.symlink(target_path, link_path, target_is_directory=True)
+        return True, ""
+    except OSError as error:
+        return False, str(error)
+
+
+def prepare_wrp_binarize_source(staging_dir, folder_path, prefix, project_root, log):
+    virtual_source = get_project_prefix_path(project_root, prefix)
+
+    if not virtual_source:
+        log("WARNING: Terrain WRP prefix is empty. Binarize will use the staging folder path.")
+        return staging_dir, None
+
+    if paths_are_same(virtual_source, staging_dir):
+        return staging_dir, None
+
+    if os.path.isdir(virtual_source):
+        if paths_are_same(virtual_source, folder_path):
+            log(f"Terrain WRP Binarize source uses real project-prefix folder: {virtual_source}")
+            return folder_path, None
+
+        raise BuildError(
+            "Cannot prepare terrain WRP Binarize workspace. The required project-prefix path already exists "
+            f"and is not the selected addon source: {virtual_source}"
+        )
+
+    if os.path.exists(virtual_source):
+        raise BuildError(f"Cannot prepare terrain WRP Binarize workspace. Required path is not a folder: {virtual_source}")
+
+    workspace = normalize_working_dir(project_root)
+    parent = os.path.dirname(virtual_source)
+    rel_parent = try_relpath(parent, workspace)
+
+    if not rel_parent or rel_parent.startswith(".."):
+        raise BuildError(f"Cannot prepare terrain WRP Binarize workspace outside project root: {virtual_source}")
+
+    created_parents = []
+    current = workspace
+
+    for part in [part for part in rel_parent.split(os.sep) if part and part != "."]:
+        current = os.path.join(current, part)
+        if not os.path.exists(current):
+            os.mkdir(current)
+            created_parents.append(current)
+        elif not os.path.isdir(current):
+            raise BuildError(f"Cannot prepare terrain WRP Binarize workspace. Parent path is not a folder: {current}")
+
+    ok, output = create_directory_junction(virtual_source, staging_dir, workspace)
+
+    if not ok:
+        for created in reversed(created_parents):
+            try:
+                if not os.listdir(created):
+                    os.rmdir(created)
+            except OSError:
+                pass
+        raise BuildError(f"Could not create temporary terrain WRP Binarize junction: {virtual_source} -> {staging_dir}\n{output}")
+
+    log(f"Terrain WRP Binarize source linked at project-prefix path: {virtual_source}")
+    return virtual_source, {"link": virtual_source, "created_parents": created_parents}
+
+
+def cleanup_wrp_binarize_source(context, log):
+    if not context:
+        return
+
+    link = context.get("link", "")
+
+    if link:
+        try:
+            os.rmdir(link)
+            log(f"Removed temporary terrain WRP Binarize link: {link}")
+        except OSError as error:
+            log(f"WARNING: Could not remove temporary terrain WRP Binarize link: {link} ({error})")
+
+    for created in reversed(context.get("created_parents", [])):
+        try:
+            if not os.listdir(created):
+                os.rmdir(created)
+        except OSError:
+            pass
+
+
+def validate_binarized_wrp_outputs(staging_dir, binarized_dir, log, extra_patterns=None):
+    if not os.path.isdir(staging_dir) or not os.path.isdir(binarized_dir):
+        raise BuildError(f"WRP Binarize verification failed. Missing staging or Binarize output folder: {staging_dir} / {binarized_dir}")
+
+    checked = 0
+
+    for staged_wrp in collect_wrp_files(staging_dir, extra_patterns):
+        rel = try_relpath(staged_wrp, staging_dir)
+
+        if not rel:
+            continue
+
+        binarized_wrp = os.path.join(binarized_dir, rel)
+        rel_display = rel.replace(os.sep, WIN_SEP)
+
+        if not os.path.isfile(binarized_wrp):
+            raise BuildError(f"WRP Binarize verification failed. Binarize did not output required WRP: {rel_display}")
+
+        try:
+            staged_size = os.path.getsize(staged_wrp)
+            binarized_size = os.path.getsize(binarized_wrp)
+        except OSError as error:
+            raise BuildError(f"WRP Binarize verification failed for {rel_display}: {error}")
+
+        if binarized_size <= 0:
+            raise BuildError(f"WRP Binarize verification failed. Binarize produced an empty WRP: {rel_display}")
+
+        if staged_size >= WRP_SUSPICIOUS_SOURCE_SIZE:
+            min_expected_size = int(staged_size * WRP_SUSPICIOUS_MIN_RATIO)
+
+            if binarized_size < min_expected_size:
+                raise BuildError(
+                    "WRP Binarize verification failed. Binarize produced a suspiciously small WRP: "
+                    f"{rel_display} staged={staged_size:,} bytes, binarized={binarized_size:,} bytes. "
+                    "The source WRP will not be packed as a fallback. For terrain builds, add the extracted addon/config folders "
+                    "used by the map objects to Options -> Binarize addon folders, then rebuild."
+                )
+
+        checked += 1
+        log(f"WRP Binarize verification OK: {rel_display} staged={staged_size:,} bytes, binarized={binarized_size:,} bytes")
+
+    if checked == 0:
+        raise BuildError("WRP Binarize verification failed. No WRP files were checked.")
+
+    return checked
 
 
 def ensure_p3d_files_in_staging(source_dir, staging_dir, log, extra_patterns=None):
@@ -480,6 +644,45 @@ def get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, extra_pat
 
 def normalize_project_root_arg(project_root):
     return project_root.rstrip(WIN_SEP + "/")
+
+
+def parse_binarize_addon_folders(raw_value):
+    if not raw_value:
+        return []
+
+    items = []
+    for item in re.split(r"[\r\n,;]+", str(raw_value)):
+        value = item.strip().strip('"').strip("'")
+        if value:
+            items.append(os.path.normpath(value))
+
+    return items
+
+
+def get_binarize_addon_folders(settings, log=None):
+    project_root = normalize_project_root_arg(settings.get("project_root", ""))
+    folders = []
+    seen = set()
+
+    def add_folder(folder):
+        if not folder:
+            return
+        normalized = os.path.normpath(folder)
+        key = os.path.normcase(os.path.abspath(normalized))
+        if key in seen:
+            return
+        seen.add(key)
+        folders.append(normalized)
+
+    add_folder(project_root)
+
+    for folder in parse_binarize_addon_folders(settings.get("binarize_addon_folders", "")):
+        if os.path.isdir(folder):
+            add_folder(folder)
+        elif log:
+            log(f"WARNING: Ignoring missing Binarize addon folder: {folder}")
+
+    return folders
 
 
 def find_tool(possible):
@@ -1169,27 +1372,35 @@ def log_tool_output_summary(tool_name, lines, log):
 
 
 
-def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name=""):
+def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name="", addon_folders=None):
     if os.path.exists(binarized_output_dir):
         shutil.rmtree(binarized_output_dir)
     os.makedirs(binarized_output_dir, exist_ok=True)
     project_root_arg = normalize_project_root_arg(project_root)
     working_dir = normalize_working_dir(project_root)
-    binpath = str(Path(binarize_exe).parent)
+    binpath = working_dir
+    addon_folders = addon_folders or [project_root_arg]
     source_name = addon_name or os.path.basename(os.path.normpath(source_dir)) or "addon"
     texture_temp_dir = os.path.join(temp_dir, "addons", get_safe_temp_name(source_name), "textures")
     if os.path.isdir(texture_temp_dir):
         shutil.rmtree(texture_temp_dir)
     os.makedirs(texture_temp_dir, exist_ok=True)
-    cmd = [binarize_exe, "-targetBonesInterval=56", f"-maxProcesses={max_processes}", "-always", "-silent", f"-addon={project_root_arg}", f"-textures={texture_temp_dir}", f"-binpath={binpath}"]
+    cmd = [binarize_exe, "-targetBonesInterval=56", f"-maxProcesses={max_processes}", "-always", "-silent"]
+    for addon_folder in addon_folders:
+        cmd.append(f"-addon={normalize_project_root_arg(addon_folder)}")
+    cmd.extend([f"-textures={texture_temp_dir}", f"-binpath={binpath}"])
     if exclude_file:
         cmd.append(f"-exclude={exclude_file}")
     cmd.extend([source_dir, binarized_output_dir])
     log("")
-    log("Binarizing P3D files:")
+    log("Binarizing addon files:")
     log(f"  Source:       {source_dir}")
     log(f"  Output:       {binarized_output_dir}")
     log(f"  Project root: {project_root_arg}")
+    log(f"  Bin path:     {binpath}")
+    log("  Addon scan folders:")
+    for addon_folder in addon_folders:
+        log(f"    - {normalize_project_root_arg(addon_folder)}")
     log(f"  Texture temp: {texture_temp_dir}")
     log("")
     result = subprocess.run(cmd, cwd=working_dir if os.path.isdir(working_dir) else None, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=get_subprocess_creationflags(), startupinfo=get_hidden_startupinfo())
@@ -1391,6 +1602,7 @@ def build_all(settings, log, progress_callback):
     project_root = settings["project_root"]
     pbo_name = settings["pbo_name"]
     max_processes = settings["max_processes"]
+    binarize_addon_folders = []
     selected_addons = set(settings.get("selected_addons", []))
     force_rebuild = bool(settings.get("force_rebuild", False))
     preflight_before_build = bool(settings.get("preflight_before_build", False))
@@ -1405,11 +1617,14 @@ def build_all(settings, log, progress_callback):
     log(f"Detected total logical CPU threads: {os.cpu_count() or 'unknown'}")
     log(f"Detected available logical threads: {get_available_logical_threads()}")
     log(f"Configured Binarize max processes: {max_processes}")
-
     if use_binarize:
         if not binarize_exe or not os.path.isfile(binarize_exe):
             raise BuildError("binarize.exe not found. Select the DayZ Tools binarize.exe path.")
         log(f"Using binarize.exe: {binarize_exe}")
+        binarize_addon_folders = get_binarize_addon_folders(settings, log)
+        log("Configured Binarize addon scan folders:")
+        for addon_folder in binarize_addon_folders:
+            log(f"  - {addon_folder}")
         exclude_file = create_temp_exclude_file(temp_root, exclude_patterns, log)
         if not exclude_file:
             log("No exclude file will be passed to Binarize. Binarize uses the filtered staging folder instead.")
@@ -1509,8 +1724,19 @@ def build_all(settings, log, progress_callback):
             if job["staging_dir"] and (job["folder_needs_binarize"] or convert_config):
                 ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclude_pattern_list)
             if use_binarize and job["folder_needs_binarize"]:
-                log("Running Binarize against filtered staging folder...")
-                run_dayz_binarize(job["binarize_source"], job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"])
+                binarize_source = job["binarize_source"]
+                wrp_binarize_context = None
+
+                if job["folder_has_wrp"]:
+                    binarize_source, wrp_binarize_context = prepare_wrp_binarize_source(job["staging_dir"], job["folder_path"], job["prefix"], project_root, log)
+
+                try:
+                    log("Running Binarize against project-aware source folder..." if job["folder_has_wrp"] else "Running Binarize against filtered staging folder...")
+                    run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders)
+                    if job["folder_has_wrp"]:
+                        validate_binarized_wrp_outputs(job["staging_dir"], job["binarized_dir"], log, exclude_pattern_list)
+                finally:
+                    cleanup_wrp_binarize_source(wrp_binarize_context, log)
                 log("Overlaying binarized files onto staging folder...")
                 overlay_tree(job["binarized_dir"], job["staging_dir"], None, log)
                 if job["folder_has_p3d"]:
