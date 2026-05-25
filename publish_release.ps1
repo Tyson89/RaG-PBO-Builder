@@ -105,6 +105,25 @@ function Write-ReleasePackageSummary {
     }
 }
 
+function Invoke-ReleaseTests {
+    $PytestTemp = Join-Path $ProjectRoot ".pytest_publish_tmp"
+
+    if (Test-Path -LiteralPath $PytestTemp) {
+        Remove-Item -LiteralPath $PytestTemp -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Force -Path $PytestTemp | Out-Null
+
+    try {
+        python -m pytest -p no:cacheprovider --basetemp $PytestTemp
+        if ($LASTEXITCODE -ne 0) {
+            throw "Tests failed. Release was not published."
+        }
+    } finally {
+        Remove-Item -LiteralPath $PytestTemp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Push-Location $ProjectRoot
 try {
     $Version = Get-AppVersion
@@ -134,10 +153,7 @@ try {
 
     if (-not $SkipTests) {
         Write-Host "Running tests..."
-        python -m pytest
-        if ($LASTEXITCODE -ne 0) {
-            throw "Tests failed. Release was not published."
-        }
+        Invoke-ReleaseTests
     }
 
     if (-not $SkipPackage) {
