@@ -1423,6 +1423,8 @@ def build_all(settings, log, progress_callback):
         try:
             if update_paa_from_sources:
                 summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclude_pattern_list)
+            if job["staging_dir"] and (job["folder_needs_binarize"] or convert_config):
+                ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclude_pattern_list)
             if use_binarize and job["folder_needs_binarize"]:
                 log("Running Binarize against filtered staging folder...")
                 run_dayz_binarize(job["binarize_source"], job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"])
@@ -1433,7 +1435,6 @@ def build_all(settings, log, progress_callback):
                     summary["p3d_fallbacks"] += fallback_count
             if convert_config:
                 ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
-                ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclude_pattern_list)
                 run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
             verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log, exclude_pattern_list)
             log(f"PBO Name:   {os.path.basename(job['output_pbo'])}")

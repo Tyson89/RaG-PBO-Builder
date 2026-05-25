@@ -879,6 +879,14 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
     for match in REFERENCE_REGEX.finditer(scan_content):
         ref = normalize_reference_path(match.group(1).strip())
         ref_ext = os.path.splitext(ref)[1].lower()
+        line_start = scan_content.rfind("\n", 0, match.start()) + 1
+        line_prefix = scan_content[line_start:match.start()].strip().lower()
+
+        # Config includes are build-time preprocessor inputs. They may be
+        # excluded from the final PBO while still being staged for Binarize
+        # and CfgConvert, so do not treat them as packed runtime references.
+        if ext in {".cpp", ".hpp", ".h", ".cfg"} and line_prefix == "#include":
+            continue
 
         # Terrain-specific config references are handled by the WRP/terrain checks
         # so users do not get duplicate errors for worldName and road shape paths.

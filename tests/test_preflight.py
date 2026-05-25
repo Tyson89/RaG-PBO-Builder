@@ -176,6 +176,48 @@ def test_preflight_warns_for_odol_p3d(tmp_path):
     assert "packed_model.p3d" in joined_logs
 
 
+def test_preflight_does_not_treat_excluded_config_includes_as_runtime_references(tmp_path):
+    addon = tmp_path / "TerrainConfig"
+    addon.mkdir()
+    (addon / "config.cpp").write_text(
+        """
+class CfgPatches
+{
+    class TerrainConfig
+    {
+        units[] = {};
+        weapons[] = {};
+        requiredAddons[] = {};
+    };
+};
+class CfgWorlds
+{
+    #include "cfgLightingNew.hpp"
+    // #include "commented.hpp"
+};
+""",
+        encoding="utf-8",
+    )
+    (addon / "cfgLightingNew.hpp").write_text("class Lighting {};\n", encoding="utf-8")
+    (addon / "commented.hpp").write_text("class Commented {};\n", encoding="utf-8")
+    settings = base_preflight_settings(tmp_path)
+    settings["exclude_patterns"] = "*.hpp"
+
+    logs = []
+    result = run_preflight_for_targets(
+        settings,
+        [("TerrainConfig", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "Referenced file exists but is excluded" not in joined_logs
+    assert "cfgLightingNew.hpp" not in joined_logs
+    assert "commented.hpp" not in joined_logs
+
+
 def test_preflight_warns_for_script_duplicates_setactions_and_syntax(tmp_path):
     addon = tmp_path / "ScriptChecks"
     addon.mkdir()

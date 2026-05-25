@@ -641,6 +641,14 @@ Generated `build`, `dist`, log, `.exe`, and release package files are ignored by
 
 The repository also includes a GitHub Actions workflow. Push a tag such as `v0.7.11-beta` and GitHub will build the Windows package and attach the zip to the GitHub Release automatically.
 
+To publish the current version from `rag_version.py` without typing the Git tag commands manually:
+
+```powershell
+.\publish_release.ps1
+```
+
+The script checks that the working tree is clean, runs tests, builds the local package, checks release readiness, pushes `main`, creates the matching tag such as `v0.8.0-beta`, and pushes that tag. The tag push triggers the GitHub Actions release workflow. If the tag already exists, bump the version instead of reusing the old tag.
+
 ---
 
 ## Basic Usage
