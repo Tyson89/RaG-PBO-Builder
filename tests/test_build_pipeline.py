@@ -10,6 +10,7 @@ from rag_build_pipeline import (
     get_effective_pbo_prefix,
     has_binarizable_p3d_files,
     parse_binarize_addon_folders,
+    parse_steam_libraryfolders,
     prepare_wrp_binarize_source,
     cleanup_wrp_binarize_source,
     run_dayz_binarize,
@@ -221,6 +222,28 @@ def test_parse_binarize_addon_folders_accepts_common_separators():
     assert folders == [r"P:\dz", r"P:\custom", r"P:\more"]
 
 
+def test_parse_steam_libraryfolders_finds_non_c_drive_libraries():
+    content = r'''
+"libraryfolders"
+{
+    "0"
+    {
+        "path"        "C:\\Program Files (x86)\\Steam"
+    }
+    "1"
+    {
+        "path"        "E:\\SteamLibrary"
+    }
+    "2"        "F:\\Games\\Steam"
+}
+'''
+
+    folders = parse_steam_libraryfolders(content)
+
+    assert r"E:\SteamLibrary" in folders
+    assert r"F:\Games\Steam" in folders
+
+
 def test_suspicious_tiny_binarized_wrp_fails_build(tmp_path):
     staging = tmp_path / "staging"
     binarized = tmp_path / "binarized"
@@ -326,3 +349,51 @@ def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, mo
     assert "config.cpp" in names
     assert "data\\script.c" in names
     assert "data\\notes.txt" not in names
+
+
+def test_failed_build_cleans_output_work_folder(tmp_path, monkeypatch):
+    source = tmp_path / "project"
+    addon = source / "BrokenAddon"
+    output = tmp_path / "out"
+    addon.mkdir(parents=True)
+    (addon / "config.cpp").write_text("class CfgPatches { class BrokenAddon { requiredAddons[] = {}; }; };", encoding="utf-8")
+
+    monkeypatch.setattr("rag_build_pipeline.load_build_cache", lambda: {})
+    monkeypatch.setattr("rag_build_pipeline.save_build_cache", lambda _cache: None)
+
+    def fail_pack(*_args, **_kwargs):
+        raise BuildError("simulated pack failure")
+
+    monkeypatch.setattr("rag_build_pipeline.pack_pbo", fail_pack)
+
+    settings = {
+        "source_root": str(source),
+        "output_root_dir": str(output),
+        "temp_dir": str(tmp_path / "temp"),
+        "use_binarize": False,
+        "convert_config": False,
+        "sign_pbos": False,
+        "update_paa_from_sources": False,
+        "binarize_exe": "",
+        "cfgconvert_exe": "",
+        "imagetopaa_exe": "",
+        "dssignfile_exe": "",
+        "private_key": "",
+        "exclude_patterns": "",
+        "project_root": str(source),
+        "pbo_name": "",
+        "max_processes": 1,
+        "selected_addons": ["BrokenAddon"],
+        "force_rebuild": True,
+        "preflight_before_build": False,
+        "log_file": str(tmp_path / "build.log"),
+    }
+
+    try:
+        build_all(settings, lambda _message: None, lambda _current, _total: None)
+    except BuildError as error:
+        assert "simulated pack failure" in str(error)
+    else:
+        raise AssertionError("Expected simulated pack failure")
+
+    assert not (output / "Addons" / "_rag_build_tmp").exists()

@@ -692,28 +692,112 @@ def find_tool(possible):
     return ""
 
 
-def find_dayz_binarize():
+def decode_steam_vdf_path(value):
+    return value.replace("\\\\", WIN_SEP).replace("/", WIN_SEP)
+
+
+def parse_steam_libraryfolders(text):
+    roots = []
+    seen = set()
+
+    for match in re.finditer(r'"(?:path|\d+)"\s+"([^"]+)"', text or "", re.IGNORECASE):
+        path_value = os.path.normpath(decode_steam_vdf_path(match.group(1).strip()))
+        key = os.path.normcase(os.path.abspath(path_value))
+
+        if path_value and key not in seen:
+            seen.add(key)
+            roots.append(path_value)
+
+    return roots
+
+
+def get_registry_steam_paths():
+    if os.name != "nt":
+        return []
+
+    try:
+        import winreg
+    except Exception:
+        return []
+
+    paths = []
+    keys = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", 0),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Valve\Steam", 0),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Valve\Steam", 0),
+    ]
+
+    for hive, key_path, flags in keys:
+        try:
+            with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | flags) as key:
+                value, _kind = winreg.QueryValueEx(key, "InstallPath")
+                if value:
+                    paths.append(os.path.normpath(value))
+        except OSError:
+            continue
+
+    return paths
+
+
+def get_default_steam_paths():
     pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
     pf = os.environ.get("ProgramFiles", "C:/Program Files")
-    return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/Binarize/binarize.exe"])
+    return [str(Path(pf86) / "Steam"), str(Path(pf) / "Steam")]
+
+
+def get_steam_library_roots():
+    roots = []
+    seen = set()
+
+    def add_root(path_value):
+        if not path_value:
+            return
+        path_value = os.path.normpath(path_value)
+        key = os.path.normcase(os.path.abspath(path_value))
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(path_value)
+
+    for root in get_default_steam_paths() + get_registry_steam_paths():
+        add_root(root)
+
+    for root in list(roots):
+        library_file = Path(root) / "steamapps" / "libraryfolders.vdf"
+        if not library_file.is_file():
+            continue
+        try:
+            for library_root in parse_steam_libraryfolders(library_file.read_text(encoding="utf-8", errors="ignore")):
+                add_root(library_root)
+        except OSError:
+            continue
+
+    return roots
+
+
+def get_dayz_tools_candidates(*relative_parts):
+    candidates = []
+
+    for root in get_steam_library_roots():
+        candidates.append(Path(root) / "steamapps" / "common" / "DayZ Tools" / Path(*relative_parts))
+
+    return candidates
+
+
+def find_dayz_binarize():
+    return find_tool(get_dayz_tools_candidates("Bin", "Binarize", "binarize.exe"))
 
 
 def find_cfgconvert():
-    pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
-    pf = os.environ.get("ProgramFiles", "C:/Program Files")
-    return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/CfgConvert/CfgConvert.exe"])
+    return find_tool(get_dayz_tools_candidates("Bin", "CfgConvert", "CfgConvert.exe"))
 
 
 def find_imagetopaa():
-    pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
-    pf = os.environ.get("ProgramFiles", "C:/Program Files")
-    return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/ImageToPAA/ImageToPAA.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/ImageToPAA/ImageToPAA.exe"])
+    return find_tool(get_dayz_tools_candidates("Bin", "ImageToPAA", "ImageToPAA.exe"))
 
 
 def find_dssignfile():
-    pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
-    pf = os.environ.get("ProgramFiles", "C:/Program Files")
-    return find_tool([Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/DSUtils/DSSignFile.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/DSUtils/DSSignFile.exe", Path(pf86) / "Steam/steamapps/common/DayZ Tools/Bin/DSSignFile/DSSignFile.exe", Path(pf) / "Steam/steamapps/common/DayZ Tools/Bin/DSSignFile/DSSignFile.exe"])
+    return find_tool(get_dayz_tools_candidates("Bin", "DSUtils", "DSSignFile.exe") + get_dayz_tools_candidates("Bin", "DSSignFile", "DSSignFile.exe"))
 
 
 def get_signature_pattern_for_pbo(pbo_path):
@@ -1766,6 +1850,7 @@ def build_all(settings, log, progress_callback):
             save_build_cache(cache)
         except Exception:
             summary["failed"] += 1
+            cleanup_output_work_dir(job.get("output_work_dir", ""), log)
             raise
 
     progress_callback(len(targets), len(targets))

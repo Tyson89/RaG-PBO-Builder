@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.8.0 Beta
+**Version:** 0.8.1 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -39,6 +39,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Save named presets for Project Source and Build Output
 - Load Project Source and Build Output presets independently for faster project switching
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
+- Auto-detect DayZ Tools from Steam library folders, including non-C-drive Steam libraries
 - Includes additional terrain and mapper-focused WRP checks
 - Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`
 - Drop `.pbo` files directly into the inspector window on Windows
@@ -669,7 +670,7 @@ To publish the current version from `rag_version.py` without typing the Git tag 
 .\publish_release.ps1
 ```
 
-The script checks that the working tree is clean, runs tests, builds the local package, checks release readiness, pushes `main`, creates the matching tag such as `v0.8.0-beta`, and pushes that tag. The tag push triggers the GitHub Actions release workflow. If the tag already exists, bump the version instead of reusing the old tag.
+The script checks that the working tree is clean, runs tests, builds the local package, checks release readiness, pushes `main`, creates the matching tag such as `v0.8.1-beta`, and pushes that tag. The tag push triggers the GitHub Actions release workflow. If the tag already exists, bump the version instead of reusing the old tag.
 
 ---
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1 Beta
+
+- Cleaned per-addon output work folders after failed builds so `_rag_build_tmp` is not left behind.
+- Improved DayZ Tools auto-detection by reading Steam library folders instead of only checking the default C-drive install path.
+
 ## 0.8.0 Beta
 
 - Promoted the current Builder and Inspector release line to `0.8.0 Beta`.
