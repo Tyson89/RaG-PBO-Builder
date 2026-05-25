@@ -312,18 +312,38 @@ def ensure_config_cpp_files_in_staging(source_dir, staging_dir, log, extra_patte
     return copied
 
 
+def get_staged_include_relative_path(parent_staged_rel, include_value):
+    raw = normalize_reference_path(include_value).strip(WIN_SEP)
+
+    if not raw:
+        return ""
+
+    raw_os = raw.replace(WIN_SEP, os.sep)
+
+    if os.path.isabs(raw_os):
+        return ""
+
+    parent_dir = os.path.dirname(parent_staged_rel)
+    staged_rel = os.path.normpath(os.path.join(parent_dir, raw_os)) if parent_dir else os.path.normpath(raw_os)
+
+    if staged_rel == "." or staged_rel.startswith(".." + os.sep) or staged_rel == "..":
+        return ""
+
+    return staged_rel
+
+
 def collect_config_include_files(config_files, source_dir, project_root):
     include_pattern = re.compile(r"^\s*#include\s+[\"<]([^\">]+)[\">]", re.IGNORECASE | re.MULTILINE)
-    include_files = []
+    include_entries = []
     seen = set()
 
-    def visit(config_file):
+    def visit(config_file, staged_rel):
         try:
             path = Path(config_file).resolve(strict=False)
         except Exception:
             path = Path(config_file)
 
-        key = os.path.normcase(str(path))
+        key = (os.path.normcase(str(path)), staged_rel.lower())
 
         if key in seen:
             return
@@ -338,28 +358,38 @@ def collect_config_include_files(config_files, source_dir, project_root):
         content = strip_cpp_comments(raw_content, preserve_lines=True)
 
         for match in include_pattern.finditer(content):
-            include_path = resolve_config_include_path(match.group(1).strip(), str(path), source_dir, project_root)
+            include_value = match.group(1).strip()
+            include_path = resolve_config_include_path(include_value, str(path), source_dir, project_root)
+            include_staged_rel = get_staged_include_relative_path(staged_rel, include_value)
 
-            if include_path and os.path.isfile(include_path):
-                include_files.append(include_path)
-                visit(include_path)
+            if include_path and os.path.isfile(include_path) and include_staged_rel:
+                include_entries.append({"source": include_path, "staged_rel": include_staged_rel})
+                visit(include_path, include_staged_rel)
 
     for config_file in config_files:
-        visit(config_file)
+        config_rel = try_relpath(config_file, source_dir)
+
+        if not config_rel:
+            continue
+
+        visit(config_file, os.path.normpath(config_rel))
 
     unique = []
     emitted = set()
 
-    for include_file in include_files:
-        key = os.path.normcase(os.path.abspath(include_file))
+    for include_entry in include_entries:
+        key = (
+            os.path.normcase(os.path.abspath(include_entry["source"])),
+            include_entry["staged_rel"].lower(),
+        )
 
         if key in emitted:
             continue
 
         emitted.add(key)
-        unique.append(include_file)
+        unique.append(include_entry)
 
-    unique.sort(key=lambda path: os.path.normcase(os.path.abspath(path)))
+    unique.sort(key=lambda item: item["staged_rel"].lower())
     return unique
 
 
@@ -369,20 +399,12 @@ def ensure_config_include_files_in_staging(source_dir, staging_dir, project_root
     if not source_configs:
         return 0
 
-    include_files = collect_config_include_files(source_configs, source_dir, project_root)
+    include_entries = collect_config_include_files(source_configs, source_dir, project_root)
     copied = already_present = outside_source = 0
 
-    for include_file in include_files:
-        if not is_path_inside(include_file, source_dir):
-            outside_source += 1
-            log(f"WARNING: Config include is outside the addon source folder and may not resolve from staging: {include_file}")
-            continue
-
-        rel = try_relpath(include_file, source_dir)
-        if not rel:
-            outside_source += 1
-            log(f"WARNING: Config include is on a different drive than the addon source and may not resolve from staging: {include_file}")
-            continue
+    for include_entry in include_entries:
+        include_file = include_entry["source"]
+        rel = include_entry["staged_rel"]
         target_file = os.path.join(staging_dir, rel)
 
         if os.path.isfile(target_file) and files_are_same_for_staging(include_file, target_file, True):
@@ -392,9 +414,13 @@ def ensure_config_include_files_in_staging(source_dir, staging_dir, project_root
         os.makedirs(os.path.dirname(target_file), exist_ok=True)
         shutil.copy2(include_file, target_file)
         copied += 1
-        log(f"Copied config include needed for CfgConvert: {rel.replace(os.sep, WIN_SEP)}")
+        if not is_path_inside(include_file, source_dir):
+            outside_source += 1
+            log(f"Copied external config include needed for Binarize/CfgConvert: {include_file} -> {rel.replace(os.sep, WIN_SEP)}")
+        else:
+            log(f"Copied config include needed for Binarize/CfgConvert: {rel.replace(os.sep, WIN_SEP)}")
 
-    if include_files:
+    if include_entries:
         log(f"Config include staging: copied={copied}, already_present={already_present}, outside_source={outside_source}")
 
     return copied

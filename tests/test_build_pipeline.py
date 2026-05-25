@@ -120,7 +120,31 @@ class CfgWorlds
     assert (staging / "cfgNavmesh.hpp").read_text(encoding="utf-8") == '#include "nested/cfgNames.hpp"\n'
     assert (staging / "nested" / "cfgNames.hpp").read_text(encoding="utf-8") == "class Names {};\n"
     assert not (staging / "commented.hpp").exists()
-    assert "Copied config include needed for CfgConvert: cfgNavmesh.hpp" in "\n".join(logs)
+    assert "Copied config include needed for Binarize/CfgConvert: cfgNavmesh.hpp" in "\n".join(logs)
+
+
+def test_config_includes_outside_source_are_copied_to_staged_include_path(tmp_path):
+    project = tmp_path / "project"
+    source = project / "world"
+    staging = tmp_path / "staging"
+    source.mkdir(parents=True)
+    (source / "config.cpp").write_text(
+        """
+class CfgWorlds
+{
+    #include "cfgNavmesh.hpp"
+};
+""",
+        encoding="utf-8",
+    )
+    (project / "cfgNavmesh.hpp").write_text("class CfgNavmesh {};\n", encoding="utf-8")
+
+    logs = []
+    copied = ensure_config_include_files_in_staging(str(source), str(staging), str(project), logs.append, ["*.hpp"])
+
+    assert copied == 1
+    assert (staging / "cfgNavmesh.hpp").read_text(encoding="utf-8") == "class CfgNavmesh {};\n"
+    assert "Copied external config include needed for Binarize/CfgConvert" in "\n".join(logs)
 
 
 def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, monkeypatch):
