@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.8.1 Beta
+**Version:** 0.8.2 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -40,6 +40,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Save named presets for Project Source and Build Output
 - Load Project Source and Build Output presets independently for faster project switching
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
+- Check GitHub releases from the Builder window to see whether a newer version is available
 - Auto-detect DayZ Tools from Steam library folders, including non-C-drive Steam libraries
 - Includes additional terrain and mapper-focused WRP checks
 - Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`

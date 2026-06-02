@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2 Beta
+
+- Added a manual Check for Update button that compares the installed version with the newest GitHub release, including beta prereleases.
+
 ## 0.8.1 Beta
 
 - Cleaned per-addon output work folders after failed builds so `_rag_build_tmp` is not left behind.

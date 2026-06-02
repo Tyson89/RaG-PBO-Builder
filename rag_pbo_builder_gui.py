@@ -26,6 +26,7 @@ import subprocess
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -55,6 +56,7 @@ from rag_builder_storage import (
     save_saved_settings,
 )
 from rag_preflight import run_preflight_for_targets
+from rag_update_check import fetch_latest_release, is_remote_version_newer
 from rag_version import APP_VERSION
 
 APP_TITLE = "RaG PBO Builder"
@@ -536,6 +538,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.clear_cache_button = self._make_action_button(secondary, "Clear build cache", self.clear_build_cache_from_ui)
         self.open_logs_button = self._make_action_button(secondary, "Open logs", self.open_logs_folder)
         self.latest_log_button = self._make_action_button(secondary, "Latest log", self.open_latest_log)
+        self.update_check_button = self._make_action_button(secondary, "Check for Update", self.start_update_check, tooltip="Check GitHub releases for a newer RaG PBO Builder version.")
 
         filter_frame = ttk.Frame(secondary, style="Card.TFrame")
         filter_frame.pack(side="right")
@@ -1494,9 +1497,63 @@ class RaGPboBuilderApp(tk.Tk):
                     self.set_status("Error", "error")
                     self.close_current_log_file()
                     messagebox.showerror(APP_TITLE, payload)
+                elif item_type == "update_check_done":
+                    if hasattr(self, "update_check_button"):
+                        self.update_check_button.configure(state="normal")
+                    self.handle_update_check_result(payload)
+                elif item_type == "update_check_error":
+                    if hasattr(self, "update_check_button"):
+                        self.update_check_button.configure(state="normal")
+                    self.log(f"WARNING: {payload}")
+                    messagebox.showwarning(APP_TITLE, str(payload))
         except queue.Empty:
             flush()
         self.after(100, self._poll_log_queue)
+
+    def start_update_check(self):
+        if hasattr(self, "update_check_button"):
+            self.update_check_button.configure(state="disabled")
+        self.log("INFO: Checking GitHub releases for updates...")
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self):
+        try:
+            release = fetch_latest_release()
+            self.log_queue.put(("update_check_done", release))
+        except Exception as exc:
+            self.log_queue.put(("update_check_error", str(exc)))
+
+    def handle_update_check_result(self, release):
+        if is_remote_version_newer(APP_VERSION, release.tag_name):
+            label = release.name or release.tag_name
+            self.log(f"Update available: installed {APP_VERSION}, latest {label}.")
+            details = self._format_release_notes_excerpt(release.body)
+            message = f"Update available.\n\nInstalled: {APP_VERSION}\nLatest: {label}"
+            if details:
+                message += f"\n\nRelease notes:\n{details}"
+            message += "\n\nOpen the GitHub release page?"
+            if release.html_url and messagebox.askyesno(APP_TITLE, message):
+                webbrowser.open(release.html_url)
+            elif not release.html_url:
+                messagebox.showinfo(APP_TITLE, message)
+            return
+
+        self.log(f"Installed version is up to date: {APP_VERSION}.")
+        messagebox.showinfo(APP_TITLE, f"RaG PBO Builder is up to date.\n\nInstalled: {APP_VERSION}\nLatest: {release.name or release.tag_name}")
+
+    def _format_release_notes_excerpt(self, body):
+        lines = []
+        for raw_line in str(body or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            lines.append(line)
+            if len(lines) >= 8:
+                break
+        text = "\n".join(lines)
+        if len(text) > 900:
+            return text[:897].rstrip() + "..."
+        return text
 
     def log(self, message):
         self.log_many([message])
