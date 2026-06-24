@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.8.3 Beta
+**Version:** 0.8.4 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -193,9 +193,15 @@ or:
 RaG\BaseBuilding
 ```
 
-If no prefix file exists, the builder falls back to the addon/PBO name.
+If no prefix file exists, the builder uses the addon folder path relative to the configured Project root. For example, packing `P:\rag_baseitems\rag_baseitems_scripts` with Project root `P:\` uses this prefix:
 
-Prefix helper files are not packed into the final PBO.
+```txt
+rag_baseitems\rag_baseitems_scripts
+```
+
+If the addon is not inside the Project root, the builder falls back to the addon/PBO name.
+
+The final PBO stores the prefix in the PBO header and also includes one generated `$PBOPREFIX$` file containing the effective prefix. Source prefix helper variants such as `$prefix$` or `$PBOPREFIX$.txt` are normalized into that one packed `$PBOPREFIX$` entry.
 
 Preflight also performs prefix sanity checks and can warn about suspicious prefix issues such as:
 

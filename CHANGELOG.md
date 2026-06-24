@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.4 Beta
+
+- Changed default PBO prefix handling so selected addon folders inside the configured Project root use their project-relative path when no explicit `$PBOPREFIX$` file exists.
+- Packed a generated `$PBOPREFIX$` file into every PBO that has an effective prefix, matching the PBO header prefix and making extracted/modular workflows easier to inspect.
+- Updated preflight prefix reporting to show the project-relative prefix the build will actually use.
+
 ## 0.8.3 Beta
 
 - Ignored dynamically concatenated script asset path fragments during reference preflight checks, avoiding false errors for runtime-built paths such as `name + "_rvmatname.rvmat"`.
