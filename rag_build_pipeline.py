@@ -714,6 +714,18 @@ def has_wrp_files(source_dir, extra_patterns=None):
     return False
 
 
+def get_project_relative_pbo_prefix(folder_path, project_root):
+    if not folder_path or not project_root:
+        return ""
+
+    rel = try_relpath(os.path.abspath(folder_path), normalize_working_dir(project_root))
+
+    if not rel or rel in {".", ""} or rel.startswith(".." + os.sep) or rel == "..":
+        return ""
+
+    return rel.replace(os.sep, WIN_SEP).strip(WIN_SEP)
+
+
 def get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, extra_patterns, log=None):
     prefix = get_pbo_prefix(pbo_base_name, folder_path)
 
@@ -722,17 +734,22 @@ def get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, extra_pat
 
     wrp_files = collect_wrp_files(folder_path, extra_patterns)
 
-    if not wrp_files:
-        return prefix
+    if wrp_files:
+        config_files = collect_config_cpp_files(folder_path, extra_patterns)
+        worldname_refs = find_worldname_references(config_files, folder_path, project_root)
+        inferred_prefix = infer_terrain_pbo_prefix_from_worldname(folder_path, wrp_files, worldname_refs)
 
-    config_files = collect_config_cpp_files(folder_path, extra_patterns)
-    worldname_refs = find_worldname_references(config_files, folder_path, project_root)
-    inferred_prefix = infer_terrain_pbo_prefix_from_worldname(folder_path, wrp_files, worldname_refs)
+        if inferred_prefix and inferred_prefix.lower() != prefix.lower():
+            if log:
+                log(f"Terrain worldName implies PBO prefix '{inferred_prefix}'. Using it instead of fallback prefix '{prefix}'.")
+            return inferred_prefix
 
-    if inferred_prefix and inferred_prefix.lower() != prefix.lower():
+    project_relative_prefix = get_project_relative_pbo_prefix(folder_path, project_root)
+
+    if project_relative_prefix and project_relative_prefix.lower() != prefix.lower():
         if log:
-            log(f"Terrain worldName implies PBO prefix '{inferred_prefix}'. Using it instead of fallback prefix '{prefix}'.")
-        return inferred_prefix
+            log(f"Project-relative path implies PBO prefix '{project_relative_prefix}'. Using it instead of fallback prefix '{prefix}'.")
+        return project_relative_prefix
 
     return prefix
 

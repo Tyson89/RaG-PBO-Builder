@@ -397,3 +397,156 @@ def test_preflight_summarizes_terrain_layer_source_texture_spam(tmp_path):
     assert "Terrain layer source textures have no matching .paa: 12 file(s)" in joined_logs
     assert joined_logs.count("RVMAT references a source texture format instead of .paa") == 0
     assert joined_logs.count("Source texture exists without matching .paa: data\\layers") == 0
+
+def test_preflight_reports_project_relative_prefix_for_nested_addon(tmp_path):
+    addon = tmp_path / "rag_baseitems" / "rag_baseitems_scripts"
+    addon.mkdir(parents=True)
+    (addon / "config.cpp").write_text(
+        """
+class CfgPatches
+{
+    class rag_baseitems_scripts
+    {
+        requiredAddons[] = {};
+    };
+};
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("rag_baseitems_scripts", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "project-relative path will be used as prefix: rag_baseitems\\rag_baseitems_scripts" in joined_logs
+
+
+def test_preflight_warns_when_required_addons_uses_selected_pbo_name(tmp_path):
+    base = tmp_path / "rag_baseitems_scripts"
+    cards = tmp_path / "rag_cards"
+    base.mkdir()
+    cards.mkdir()
+    (base / "config.cpp").write_text(
+        """
+class CfgPatches
+{
+    class RaG_BaseItems_Scripts
+    {
+        requiredAddons[] = {};
+    };
+};
+""",
+        encoding="utf-8",
+    )
+    (cards / "config.cpp").write_text(
+        """
+class CfgPatches
+{
+    class RaG_Cards
+    {
+        requiredAddons[] = {"rag_baseitems_scripts"};
+    };
+};
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("rag_baseitems_scripts", str(base)), ("rag_cards", str(cards))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "requiredAddons[] references selected addon/PBO name 'rag_baseitems_scripts'" in joined_logs
+    assert "RaG_BaseItems_Scripts" in joined_logs
+    assert "CfgPatches class names, not PBO names" in joined_logs
+
+
+def test_preflight_warns_when_script_uses_selected_addon_class_without_required_addon(tmp_path):
+    base = tmp_path / "rag_baseitems_scripts"
+    cards = tmp_path / "rag_cards"
+    base_scripts = base / "scripts" / "4_World" / "rag_baseitems"
+    cards_scripts = cards / "scripts" / "4_World" / "rag_cards"
+    base_scripts.mkdir(parents=True)
+    cards_scripts.mkdir(parents=True)
+    (base / "config.cpp").write_text(
+        """
+class CfgPatches
+{
+    class RaG_BaseItems_Scripts
+    {
+        requiredAddons[] = {};
+    };
+};
+class CfgMods
+{
+    class RaG_BaseItems_Scripts
+    {
+        type = "mod";
+        dependencies[] = {"World"};
+        class defs
+        {
+            class worldScriptModule
+            {
+                files[] = {"rag_baseitems_scripts/scripts/4_World"};
+            };
+        };
+    };
+};
+""",
+        encoding="utf-8",
+    )
+    (cards / "config.cpp").write_text(
+        """
+class CfgPatches
+{
+    class RaG_Cards
+    {
+        requiredAddons[] = {};
+    };
+};
+class CfgMods
+{
+    class RaG_Cards
+    {
+        type = "mod";
+        dependencies[] = {"World"};
+        class defs
+        {
+            class worldScriptModule
+            {
+                files[] = {"rag_cards/scripts/4_World"};
+            };
+        };
+    };
+};
+""",
+        encoding="utf-8",
+    )
+    (base_scripts / "container.c").write_text("class rag_baseitems_container_base {};", encoding="utf-8")
+    (cards_scripts / "displaycase.c").write_text("class rag_card_displaycase { rag_baseitems_container_base cargo; };", encoding="utf-8")
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("rag_baseitems_scripts", str(base)), ("rag_cards", str(cards))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "Script class reference may need requiredAddons[]" in joined_logs
+    assert "rag_cards uses class rag_baseitems_container_base" in joined_logs
+    assert "RaG_BaseItems_Scripts" in joined_logs
+    assert "not the PBO filename" in joined_logs

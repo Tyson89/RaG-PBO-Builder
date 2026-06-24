@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pbo_core import read_pbo_archive
+from pbo_core import read_pbo_archive, read_pbo_entry_data
 from rag_pbo_writer import pack_pbo, pbo_entry_bytes_match_file, verify_packed_pbo
 
 
@@ -25,12 +25,14 @@ def test_pack_pbo_respects_excludes_but_keeps_config_cpp(tmp_path):
     archive = read_pbo_archive(str(output))
     names = {entry.name.lower() for entry in archive["entries"]}
 
+    assert "$pboprefix$" in names
     assert "config.cpp" in names
     assert "data\\script.c" in names
     assert "data\\world.wrp" in names
     assert "data\\notes.txt" not in names
     assert "data\\source.png" not in names
     assert ".gitignore" not in names
+    assert read_pbo_entry_data(str(output), "$PBOPREFIX$").decode("ascii") == "Test\\Addon\r\n"
 
     entry = next(entry for entry in archive["entries"] if entry.name.lower() == "data\\world.wrp")
     matches, reason = pbo_entry_bytes_match_file(str(output), entry, str(wrp))

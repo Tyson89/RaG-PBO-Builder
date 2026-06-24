@@ -13,6 +13,7 @@ from rag_builder_common import (
     normalize_working_dir,
     parse_exclude_patterns,
     run_hidden_text_subprocess,
+    try_relpath,
     should_skip_dir,
     should_skip_file,
 )
@@ -402,7 +403,7 @@ def read_raw_prefix_file(prefix_file):
     return ""
 
 
-def preflight_check_prefix(addon_name, addon_source_dir, result, log):
+def preflight_check_prefix(addon_name, addon_source_dir, result, log, project_root=""):
     result.checked_prefixes += 1
     prefix_files = collect_pbo_prefix_files(addon_source_dir)
 
@@ -411,7 +412,11 @@ def preflight_check_prefix(addon_name, addon_source_dir, result, log):
         result.warning(log, f"Multiple PBO prefix files found in {addon_name}: {names}")
 
     if not prefix_files:
-        result.note(log, f"No PBO prefix file found in {addon_name}. The PBO Name/folder name will be used as prefix.")
+        project_relative_prefix = get_project_relative_pbo_prefix_for_preflight(addon_source_dir, project_root)
+        if project_relative_prefix and project_relative_prefix.lower() != addon_name.lower():
+            result.note(log, f"No PBO prefix file found in {addon_name}. The project-relative path will be used as prefix: {project_relative_prefix}")
+        else:
+            result.note(log, f"No PBO prefix file found in {addon_name}. The PBO Name/folder name will be used as prefix.")
         return
 
     raw_prefix = read_raw_prefix_file(prefix_files[0])
@@ -568,6 +573,156 @@ def preflight_check_cfgpatches(config_cpp, addon_source_dir, result, log, enable
 
             if missing_hints:
                 result.note(log, f"Possible requiredAddons[] hints for {patch_name}: {', '.join(missing_hints)}")
+
+
+
+
+def collect_cfgpatches_info_from_config(config_cpp, addon_source_dir, project_root=""):
+    content = read_config_with_local_includes(config_cpp, None, addon_source_dir, project_root)
+
+    if not content:
+        return []
+
+    clean = strip_cpp_comments(content)
+    cfgpatches_body = find_class_body(clean, "CfgPatches")
+
+    if not cfgpatches_body:
+        return []
+
+    rel_config = format_config_path(config_cpp, addon_source_dir)
+    infos = []
+
+    for patch_name, _, patch_body in iter_top_level_class_blocks(cfgpatches_body):
+        required_addons = parse_array_values(patch_body, "requiredAddons")
+        infos.append({
+            "patch_name": patch_name,
+            "required_addons": required_addons or [],
+            "required_declared": required_addons is not None,
+            "config": rel_config,
+        })
+
+    return infos
+
+
+def collect_selected_addon_dependency_infos(targets, extra_patterns, project_root=""):
+    infos = []
+
+    for addon_name, addon_source_dir in targets:
+        configs = collect_config_cpp_files(addon_source_dir, extra_patterns)
+        cfgpatches_configs = select_cfgpatches_check_configs(configs, addon_source_dir, project_root) if configs else []
+        patches = []
+
+        for config_cpp in cfgpatches_configs:
+            patches.extend(collect_cfgpatches_info_from_config(config_cpp, addon_source_dir, project_root))
+
+        infos.append({
+            "addon_name": addon_name,
+            "addon_source_dir": addon_source_dir,
+            "patches": patches,
+            "patch_names": [patch["patch_name"] for patch in patches],
+            "required_addons": sorted({required for patch in patches for required in patch["required_addons"]}),
+        })
+
+    return infos
+
+
+def preflight_check_selected_required_addons(dependency_infos, result, log):
+    patch_to_addon = {}
+    addon_name_to_info = {}
+
+    for info in dependency_infos:
+        addon_name_to_info[info["addon_name"].lower()] = info
+        for patch_name in info["patch_names"]:
+            patch_to_addon[patch_name.lower()] = (patch_name, info)
+
+    for info in dependency_infos:
+        for required in info["required_addons"]:
+            required_key = required.lower()
+
+            matched_addon = addon_name_to_info.get(required_key)
+
+            if required_key in patch_to_addon and not matched_addon:
+                continue
+
+            if not matched_addon:
+                continue
+
+            if required_key in patch_to_addon and matched_addon and required in matched_addon.get("patch_names", []):
+                continue
+
+            patch_names = matched_addon.get("patch_names") or []
+            if patch_names:
+                patch_list = ", ".join(patch_names[:6])
+                if len(patch_names) > 6:
+                    patch_list += f", ... {len(patch_names) - 6} more"
+            else:
+                patch_list = "no CfgPatches class"
+
+            result.warning(
+                log,
+                f"requiredAddons[] references selected addon/PBO name '{required}' in {info['addon_name']}, but selected addon '{matched_addon['addon_name']}' declares {patch_list}. DayZ load order uses CfgPatches class names, not PBO names.",
+            )
+
+
+def preflight_check_cross_addon_script_dependencies(dependency_infos, script_definitions_by_addon, script_files, result, log):
+    info_by_addon = {info["addon_name"]: info for info in dependency_infos}
+    class_owner = {}
+    ambiguous = set()
+
+    for addon_name, definitions in script_definitions_by_addon.items():
+        for definition in definitions:
+            key = definition["name"].lower()
+            if key in class_owner and class_owner[key]["addon_name"] != addon_name:
+                ambiguous.add(key)
+                continue
+            class_owner[key] = {"addon_name": addon_name, "class_name": definition["name"]}
+
+    for key in ambiguous:
+        class_owner.pop(key, None)
+
+    reported = set()
+
+    for script_file in script_files:
+        source_addon = script_file["addon_name"]
+        source_info = info_by_addon.get(source_addon, {})
+        source_required = {value.lower() for value in source_info.get("required_addons", [])}
+        source_defined = {definition["name"].lower() for definition in script_definitions_by_addon.get(source_addon, [])}
+        content = script_file["content"]
+
+        for class_key, owner in class_owner.items():
+            owner_addon = owner["addon_name"]
+            class_name = owner["class_name"]
+
+            if owner_addon == source_addon or class_key in source_defined:
+                continue
+
+            owner_info = info_by_addon.get(owner_addon, {})
+            owner_patch_names = owner_info.get("patch_names", [])
+            owner_patch_keys = {patch.lower() for patch in owner_patch_names}
+
+            if source_required & owner_patch_keys:
+                continue
+
+            match = re.search(r"\b" + re.escape(class_name) + r"\b", content)
+
+            if not match:
+                continue
+
+            report_key = (source_addon, owner_addon, class_key)
+            if report_key in reported:
+                continue
+
+            reported.add(report_key)
+            line_number = get_line_number_from_index(content, match.start())
+            source_location = format_source_location(script_file["file_path"], script_file["addon_source_dir"], line_number)
+            patch_list = ", ".join(owner_patch_names[:6]) if owner_patch_names else "<missing CfgPatches>"
+            if len(owner_patch_names) > 6:
+                patch_list += f", ... {len(owner_patch_names) - 6} more"
+
+            result.warning(
+                log,
+                f"Script class reference may need requiredAddons[]: {source_addon} uses class {class_name} from selected addon {owner_addon} in {source_location}, but requiredAddons[] does not include {patch_list}. Add the owning CfgPatches class name, not the PBO filename.",
+            )
 
 
 def resolve_script_module_path(path_value, addon_source_dir, project_root, prefix=""):
@@ -1342,11 +1497,28 @@ def get_explicit_pbo_prefix(addon_source_dir):
     return normalize_reference_path(raw_prefix).strip(WIN_SEP)
 
 
-def get_detected_pbo_prefix_for_preflight(addon_source_dir):
+def get_project_relative_pbo_prefix_for_preflight(addon_source_dir, project_root=""):
+    if not addon_source_dir or not project_root:
+        return ""
+
+    rel = try_relpath(os.path.abspath(addon_source_dir), normalize_working_dir(project_root))
+
+    if not rel or rel in {".", ""} or rel.startswith(".." + os.sep) or rel == "..":
+        return ""
+
+    return normalize_reference_path(rel).strip(WIN_SEP)
+
+
+def get_detected_pbo_prefix_for_preflight(addon_source_dir, project_root=""):
     explicit_prefix = get_explicit_pbo_prefix(addon_source_dir)
 
     if explicit_prefix:
         return explicit_prefix
+
+    project_relative_prefix = get_project_relative_pbo_prefix_for_preflight(addon_source_dir, project_root)
+
+    if project_relative_prefix:
+        return project_relative_prefix
 
     folder_name = os.path.basename(os.path.normpath(addon_source_dir)) or "addon"
     return normalize_reference_path(folder_name).strip(WIN_SEP)
@@ -1823,7 +1995,7 @@ def preflight_check_terrain_structure(addon_name, addon_source_dir, wrp_files, e
 
 def preflight_check_terrain_layers(addon_name, addon_source_dir, project_root, extra_patterns, result, log):
     layer_dirs = find_terrain_layer_dirs(addon_source_dir, extra_patterns)
-    detected_prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir)
+    detected_prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir, project_root)
 
     if not layer_dirs:
         result.note(log, f"Terrain layers folder was not found in common shallow locations. This is valid for modular maps that keep layers in another PBO or omit layer RVMATs from this addon: {addon_name}")
@@ -1977,7 +2149,7 @@ def preflight_check_terrain_wrp(addon_name, addon_source_dir, config_files, proj
         result.note(log, "Terrain size/source warning check disabled.")
 
     explicit_prefix = get_explicit_pbo_prefix(addon_source_dir)
-    detected_prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir)
+    detected_prefix = get_detected_pbo_prefix_for_preflight(addon_source_dir, project_root)
 
     if checks.get("terrain_cfgworlds", True):
         if not config_files:
@@ -2255,6 +2427,13 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
     log("DayZ Preflight Check")
     log("=" * 80)
 
+    dependency_infos = collect_selected_addon_dependency_infos(targets, extra_patterns, project_root)
+    selected_script_files = []
+    script_definitions_by_addon = {}
+
+    if preflight_checks["required_addons_hints"]:
+        preflight_check_selected_required_addons(dependency_infos, result, log)
+
     for index, (addon_name, addon_source_dir) in enumerate(targets, start=1):
         if progress_callback:
             progress_callback(index - 1, len(targets))
@@ -2262,7 +2441,7 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
         log("")
         log(f"Checking addon {index}/{len(targets)}: {addon_name}")
 
-        preflight_check_prefix(addon_name, addon_source_dir, result, log)
+        preflight_check_prefix(addon_name, addon_source_dir, result, log, project_root)
 
         if preflight_checks["case_conflicts"]:
             preflight_scan_case_conflicts(addon_source_dir, extra_patterns, result, log)
@@ -2334,6 +2513,17 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
                 ext = os.path.splitext(file)[1].lower()
 
                 if ext in PREFLIGHT_TEXT_EXTENSIONS:
+                    if ext == ".c" and preflight_checks["script_checks"]:
+                        try:
+                            script_content = Path(full).read_text(encoding="utf-8", errors="ignore")
+                            selected_script_files.append({
+                                "addon_name": addon_name,
+                                "addon_source_dir": addon_source_dir,
+                                "file_path": full,
+                                "content": strip_cpp_comments(script_content, preserve_lines=True),
+                            })
+                        except Exception:
+                            pass
                     preflight_scan_references(full, addon_source_dir, project_root, extra_patterns, result, log, script_class_definitions, preflight_checks["script_checks"])
                 elif ext == ".p3d" and preflight_checks["p3d_internal"]:
                     preflight_scan_p3d_internal_references(full, addon_source_dir, project_root, extra_patterns, result, log)
@@ -2342,8 +2532,12 @@ def run_preflight_for_targets(settings, targets, log, progress_callback=None):
 
         if preflight_checks["script_checks"]:
             preflight_scan_duplicate_script_classes(addon_name, script_class_definitions, result, log)
+            script_definitions_by_addon[addon_name] = list(script_class_definitions)
         else:
             result.note(log, "Script checks disabled.")
+
+    if preflight_checks["required_addons_hints"] and preflight_checks["script_checks"]:
+        preflight_check_cross_addon_script_dependencies(dependency_infos, script_definitions_by_addon, selected_script_files, result, log)
 
     if progress_callback:
         progress_callback(len(targets), len(targets))

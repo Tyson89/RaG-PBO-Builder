@@ -1,6 +1,6 @@
 import os
 
-from pbo_core import read_pbo_archive
+from pbo_core import read_pbo_archive, read_pbo_entry_data
 from rag_builder_common import BuildError, run_hidden_text_subprocess
 from rag_build_pipeline import (
     build_all,
@@ -9,6 +9,7 @@ from rag_build_pipeline import (
     ensure_config_include_files_in_staging,
     ensure_p3d_files_in_staging,
     get_effective_pbo_prefix,
+    get_project_relative_pbo_prefix,
     get_build_failure_diagnostics,
     has_binarizable_p3d_files,
     parse_binarize_addon_folders,
@@ -68,6 +69,19 @@ class CfgWorldList
 
     assert prefix == r"outpost\world"
     assert "Terrain worldName implies PBO prefix 'outpost\\world'" in "\n".join(logs)
+
+
+def test_effective_pbo_prefix_uses_project_relative_nested_addon_path(tmp_path):
+    addon = tmp_path / "rag_baseitems" / "rag_baseitems_scripts"
+    addon.mkdir(parents=True)
+    (addon / "config.cpp").write_text("class CfgPatches { class rag_baseitems_scripts {}; };", encoding="utf-8")
+
+    logs = []
+    prefix = get_effective_pbo_prefix("rag_baseitems_scripts", str(addon), str(tmp_path), [], logs.append)
+
+    assert get_project_relative_pbo_prefix(str(addon), str(tmp_path)) == r"rag_baseitems\rag_baseitems_scripts"
+    assert prefix == r"rag_baseitems\rag_baseitems_scripts"
+    assert "Project-relative path implies PBO prefix 'rag_baseitems\\rag_baseitems_scripts'" in "\n".join(logs)
 
 
 def test_odol_p3ds_are_kept_out_of_binarize_staging_then_restored(tmp_path):
@@ -382,6 +396,52 @@ def test_build_all_packs_selected_addon_without_touching_real_cache(tmp_path, mo
     assert "config.cpp" in names
     assert "data\\script.c" in names
     assert "data\\notes.txt" not in names
+
+
+def test_build_all_packs_nested_addon_with_project_relative_prefix(tmp_path, monkeypatch):
+    source = tmp_path / "project"
+    addon = source / "rag_baseitems" / "rag_baseitems_scripts"
+    scripts = addon / "4_World" / "rag_baseitems_scripts"
+    scripts.mkdir(parents=True)
+    (addon / "config.cpp").write_text("class CfgPatches { class rag_baseitems_scripts { requiredAddons[] = {}; }; };", encoding="utf-8")
+    (scripts / "base.c").write_text("class rag_baseitems_container_base {};", encoding="utf-8")
+
+    monkeypatch.setattr("rag_build_pipeline.load_build_cache", lambda: {})
+    monkeypatch.setattr("rag_build_pipeline.save_build_cache", lambda _cache: None)
+
+    logs = []
+    output = tmp_path / "out"
+    settings = {
+        "source_root": str(source / "rag_baseitems"),
+        "output_root_dir": str(output),
+        "temp_dir": str(tmp_path / "temp"),
+        "use_binarize": False,
+        "convert_config": False,
+        "sign_pbos": False,
+        "update_paa_from_sources": False,
+        "binarize_exe": "",
+        "cfgconvert_exe": "",
+        "imagetopaa_exe": "",
+        "dssignfile_exe": "",
+        "private_key": "",
+        "exclude_patterns": "",
+        "project_root": str(source),
+        "pbo_name": "",
+        "max_processes": 1,
+        "selected_addons": ["rag_baseitems_scripts"],
+        "force_rebuild": True,
+        "preflight_before_build": False,
+        "log_file": str(tmp_path / "build.log"),
+    }
+
+    summary = build_all(settings, logs.append, lambda _current, _total: None)
+
+    assert summary["built"] == 1
+    pbo = output / "Addons" / "rag_baseitems_scripts.pbo"
+    archive = read_pbo_archive(str(pbo))
+
+    assert archive["properties"].get("prefix") == r"rag_baseitems\rag_baseitems_scripts"
+    assert read_pbo_entry_data(str(pbo), "$PBOPREFIX$").decode("ascii") == "rag_baseitems\\rag_baseitems_scripts\r\n"
 
 
 def test_failed_build_cleans_output_work_folder(tmp_path, monkeypatch):

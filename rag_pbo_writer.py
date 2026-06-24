@@ -39,8 +39,15 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
                 log(f"WARNING: Skipped external file while packing because it is on a different drive than the pack source: {full}")
                 continue
             rel = rel.replace(os.sep, WIN_SEP)
-            files.append((rel, full, os.path.getsize(full)))
-    files.sort(key=lambda item: item[0].lower())
+            files.append({"name": rel, "path": full, "data": None, "size": os.path.getsize(full)})
+
+    if prefix:
+        normalized_prefix = prefix.replace("/", WIN_SEP).strip(WIN_SEP)
+        prefix_data = safe_ascii(normalized_prefix + "\r\n", "PBO prefix file")
+        files = [entry for entry in files if entry["name"].lower() not in {"$pboprefix$", "$prefix$", "$pboprefix$.txt", "$prefix$.txt"}]
+        files.append({"name": "$PBOPREFIX$", "path": None, "data": prefix_data, "size": len(prefix_data)})
+
+    files.sort(key=lambda item: item["name"].lower())
     header = bytearray()
     header.extend(ZERO)
     header.extend(struct.pack("<I", PBO_VERSION_MAGIC))
@@ -51,10 +58,10 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
         header.extend(safe_ascii(prefix, "PBO prefix"))
         header.extend(ZERO)
     header.extend(ZERO)
-    for rel, full, size in files:
-        header.extend(safe_ascii(rel, "File path"))
+    for entry in files:
+        header.extend(safe_ascii(entry["name"], "File path"))
         header.extend(ZERO)
-        header.extend(struct.pack("<IIIII", 0, size, 0, 0, size))
+        header.extend(struct.pack("<IIIII", 0, entry["size"], 0, 0, entry["size"]))
     header.extend(ZERO)
     header.extend(struct.pack("<IIIII", 0, 0, 0, 0, 0))
     temp_output = output_path + ".tmp"
@@ -65,8 +72,15 @@ def pack_pbo(source_dir, output_path, prefix, log, extra_patterns=None):
             out.write(header)
             sha.update(header)
             total += len(header)
-            for rel, full, size in files:
-                with open(full, "rb") as file:
+            for entry in files:
+                data = entry["data"]
+                if data is not None:
+                    out.write(data)
+                    sha.update(data)
+                    total += len(data)
+                    continue
+
+                with open(entry["path"], "rb") as file:
                     while True:
                         chunk = file.read(COPY_CHUNK_SIZE)
                         if not chunk:
