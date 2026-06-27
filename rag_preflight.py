@@ -63,6 +63,7 @@ SCRIPT_SETACTIONS_METHOD_REGEX = re.compile(
     re.IGNORECASE,
 )
 SCRIPT_SUPER_SETACTIONS_REGEX = re.compile(r"\bsuper\s*\.\s*SetActions\s*\(", re.IGNORECASE)
+SCRIPT_RUNTIME_FORMAT_PLACEHOLDER_REGEX = re.compile(r"(?<!%)%(?:[1-9][0-9]*|[sdif])", re.IGNORECASE)
 
 SCRIPT_MODULE_FOLDERS = {
     "engineScriptModule": "scripts/1_Core",
@@ -279,7 +280,18 @@ def get_next_nonspace_char(content, index):
     return content[pos] if pos < len(content) else ""
 
 
-def is_dynamic_script_reference(match, content):
+def has_runtime_format_placeholder(reference):
+    # DayZ/Enforce scripts often build asset paths at runtime with String.Format,
+    # for example: "DUG\\loadingscreens\\rvmats\\thermals\\%1.rvmat".
+    # The literal contains a valid-looking extension, but the real filename only
+    # exists after runtime substitution, so preflight must not report it missing.
+    return bool(SCRIPT_RUNTIME_FORMAT_PLACEHOLDER_REGEX.search(str(reference or "")))
+
+
+def is_dynamic_script_reference(match, content, reference=""):
+    if has_runtime_format_placeholder(reference):
+        return True
+
     return get_previous_nonspace_char(content, match.start()) == "+" or get_next_nonspace_char(content, match.end()) == "+"
 
 
@@ -1085,7 +1097,7 @@ def preflight_scan_references(file_path, addon_source_dir, project_root, extra_p
         line_start = scan_content.rfind("\n", 0, match.start()) + 1
         line_prefix = scan_content[line_start:match.start()].strip().lower()
 
-        if ext == ".c" and is_dynamic_script_reference(match, scan_content):
+        if ext == ".c" and is_dynamic_script_reference(match, scan_content, ref):
             continue
 
         # Config includes are build-time preprocessor inputs. They may be

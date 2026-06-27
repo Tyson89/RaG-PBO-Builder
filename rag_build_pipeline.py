@@ -1198,6 +1198,38 @@ def paths_overlap(path_a, path_b):
         return False
 
 
+def path_is_inside_or_same(path_value, parent_value):
+    if not path_value or not parent_value:
+        return False
+
+    try:
+        path = resolve_for_safety(path_value)
+        parent = resolve_for_safety(parent_value)
+
+        if path == parent:
+            return True
+
+        path.relative_to(parent)
+        return True
+    except Exception:
+        return False
+
+
+def path_has_steam_common_dayz_parent(path_value):
+    try:
+        path_text = str(resolve_for_safety(path_value))
+    except Exception:
+        path_text = str(path_value or "")
+
+    parts = [part.strip().lower() for part in re.split(r"[\\/]+", path_text) if part.strip()]
+
+    for index in range(0, max(0, len(parts) - 2)):
+        if parts[index] == "steamapps" and parts[index + 1] == "common" and parts[index + 2] in {"dayz", "dayz tools"}:
+            return True
+
+    return False
+
+
 def get_dangerous_temp_root_reason(temp_root, source_root="", output_root=""):
     if not temp_root:
         return "Temp dir is empty."
@@ -1224,9 +1256,20 @@ def get_dangerous_temp_root_reason(temp_root, source_root="", output_root=""):
                 return f"Temp dir points to an important folder: {root_text}"
         except Exception:
             pass
-    risky = {"steam", "steamapps", "common", "dayz tools", "dayz", "program files", "program files (x86)", "windows"}
-    if {part.lower() for part in root_path.parts}.intersection(risky):
+
+    protected_roots = []
+    for env_name in ["ProgramFiles", "ProgramFiles(x86)", "SystemRoot", "WINDIR"]:
+        value = os.environ.get(env_name)
+        if value:
+            protected_roots.append(value)
+
+    for protected_root in protected_roots:
+        if path_is_inside_or_same(root_path, protected_root):
+            return f"Temp dir appears to be inside an important game/system folder: {root_text}"
+
+    if path_has_steam_common_dayz_parent(root_path):
         return f"Temp dir appears to be inside an important game/system folder: {root_text}"
+
     if source_root and paths_overlap(root_path, source_root):
         return "Temp dir overlaps with the selected Project Source."
     if output_root and paths_overlap(root_path, output_root):
