@@ -218,6 +218,44 @@ class CfgWorlds
     assert "commented.hpp" not in joined_logs
 
 
+def test_preflight_warns_for_malformed_config_array_string_and_block_semicolon(tmp_path):
+    addon = tmp_path / "BadConfig"
+    addon.mkdir()
+    (addon / "config.cpp").write_text(
+        r"""
+class CfgPatches
+{
+    class BadConfig
+    {
+        units[] = {};
+        weapons[] = {};
+        requiredAddons[] = {};
+    };
+};
+class testing
+{
+    testarray={"blah};
+}
+""",
+        encoding="utf-8",
+    )
+
+    logs = []
+    result = run_preflight_for_targets(
+        base_preflight_settings(tmp_path),
+        [("BadConfig", str(addon))],
+        logs.append,
+    )
+
+    joined_logs = "\n".join(logs)
+
+    assert result.errors == 0
+    assert "Config sanity warning in config.cpp" in joined_logs
+    assert "Possible unterminated string" in joined_logs
+    assert "Possible malformed array assignment" in joined_logs
+    assert "Possible missing semicolon after closing brace" in joined_logs
+
+
 def test_preflight_warns_for_script_duplicates_setactions_and_syntax(tmp_path):
     addon = tmp_path / "ScriptChecks"
     addon.mkdir()

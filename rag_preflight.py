@@ -461,8 +461,98 @@ def preflight_check_prefix(addon_name, addon_source_dir, result, log, project_ro
     result.note(log, f"Detected PBO prefix for {addon_name}: {normalized_prefix}")
 
 
+def iter_config_sanity_issues(content):
+    clean = strip_cpp_comments(content, preserve_lines=True)
+    brace_stack = []
+    bracket_stack = []
+    in_string = False
+    string_line = 0
+    string_col = 0
+    escape = False
+
+    for line_number, line in enumerate(clean.splitlines(), start=1):
+        line_open_string = False
+        index = 0
+
+        while index < len(line):
+            char = line[index]
+
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+
+            if char == '"':
+                in_string = True
+                line_open_string = True
+                string_line = line_number
+                string_col = index + 1
+            elif char == "{":
+                brace_stack.append((line_number, index + 1))
+            elif char == "}":
+                if brace_stack:
+                    brace_stack.pop()
+                else:
+                    yield line_number, "Unexpected closing brace `}`."
+            elif char == "[":
+                bracket_stack.append((line_number, index + 1))
+            elif char == "]":
+                if bracket_stack:
+                    bracket_stack.pop()
+                else:
+                    yield line_number, "Unexpected closing bracket `]`."
+
+            index += 1
+
+        if in_string and line_open_string:
+            yield string_line, f"Possible unterminated string starting at column {string_col}."
+
+    for line_number, column in brace_stack[-5:]:
+        yield line_number, f"Opening brace `{{` at column {column} was not closed."
+
+    for line_number, column in bracket_stack[-5:]:
+        yield line_number, f"Opening bracket `[` at column {column} was not closed."
+
+    named_array_pattern = re.compile(r"(?m)^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{")
+
+    for match in named_array_pattern.finditer(clean):
+        line_number = get_line_number_from_index(clean, match.start())
+        yield line_number, "Possible malformed array assignment. Named arrays should usually use `name[] = {...};`."
+
+    missing_semicolon_pattern = re.compile(r"}\s*(?=\r?\n\s*(?:class|[A-Za-z_][A-Za-z0-9_]*\s*[={]|$))")
+
+    for match in missing_semicolon_pattern.finditer(clean):
+        line_number = get_line_number_from_index(clean, match.start())
+        yield line_number, "Possible missing semicolon after closing brace. Config blocks usually close with `};`."
+
+
+def preflight_check_config_text_sanity(config_cpp, result, log, addon_source_dir=""):
+    config_label = format_config_path(config_cpp, addon_source_dir)
+
+    try:
+        content = Path(config_cpp).read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        result.warning(log, f"Could not read config for lightweight syntax checks: {config_label} ({e})")
+        return
+
+    reported = set()
+
+    for line_number, message in iter_config_sanity_issues(content):
+        key = (line_number, message)
+        if key in reported:
+            continue
+        reported.add(key)
+        result.warning(log, f"Config sanity warning in {config_label}: line {line_number}: {message}")
+
+
 def preflight_check_config_cpp(config_cpp, cfgconvert_exe, temp_root, addon_name, result, log, addon_source_dir=""):
     config_label = format_config_path(config_cpp, addon_source_dir)
+    preflight_check_config_text_sanity(config_cpp, result, log, addon_source_dir)
 
     if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
         result.warning(log, f"CfgConvert.exe is not configured. Skipping config.cpp syntax check for {config_label}.")
