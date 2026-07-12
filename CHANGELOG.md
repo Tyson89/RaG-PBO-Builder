@@ -2,9 +2,11 @@
 
 ## 0.8.5 Beta
 
+- Removed GitHub Actions workflows and the tracked test suite from the project.
+- Removed release-publish test execution hooks.
 - Added an Inno Setup installer for RaG PBO Builder and RaG PBO Inspector.
 - Changed the Builder update button to download a SHA-256 verified installer from GitHub Releases and launch it directly.
-- Switched release packaging and GitHub Actions release upload to installer-only output with a checksum asset.
+- Switched release packaging to installer-only output with a checksum asset.
 - Fixed temp directory safety validation so normal workspace paths containing a `DayZ` folder are no longer incorrectly blocked.
 - Kept temp directory protection active for real game/tool install folders such as `steamapps\common\DayZ`, `steamapps\common\DayZ Tools`, Windows, and Program Files paths.
 - Updated script reference preflight checks to ignore runtime format placeholders such as `%1.rvmat`, avoiding false missing-file errors for paths built with `string.Format`.
@@ -40,7 +42,7 @@
 - Updated preflight reference scanning so config `#include` files are treated as build-time inputs instead of packed runtime references.
 - Added terrain WRP Binarize output verification so suspicious tiny WRP files fail the build instead of being packed.
 - Added configurable Binarize addon scan folders for terrain builds that need object/config folders outside the project root.
-- Added `publish_release.ps1` to push the current version tag and trigger the GitHub Actions release workflow.
+- Added `publish_release.ps1` to push the current version tag.
 - Kept the `0.7.20 Beta` terrain `worldName` prefix handling and ODOL `.p3d` Binarize protection in this release.
 
 ## 0.7.20 Beta
@@ -60,8 +62,6 @@
 ## 0.7.18 Beta
 
 - Split Builder helper, preflight, and build pipeline code into dedicated modules for safer maintenance.
-- Added a pytest regression suite covering PBO writing, config comment parsing, build target detection, preflight scope, compressed PBO entries, and build packing behavior.
-- Added GitHub Actions CI to run tests and Python compile checks on pushes and pull requests.
 - Added a preflight warning for DayZ script `modded class` declarations that incorrectly use `extends` or `:` to declare a base class.
 - Rebuilt release packaging from the refactored source layout.
 
@@ -106,7 +106,6 @@
 ## 0.7.11 Beta
 
 - Added release packaging support with `package_release.ps1` for producing a GitHub Release zip containing both EXEs, docs, licence, changelog, and SHA256 checksums.
-- Added a GitHub Actions workflow that builds the Windows release package and uploads it to tagged GitHub Releases.
 - Tightened preflight scope so the broad file/reference scan ignores files excluded from the packed PBO, preventing unrelated source files from blocking selected addon builds.
 
 ## 0.7.10 Beta

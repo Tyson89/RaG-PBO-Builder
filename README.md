@@ -157,15 +157,6 @@ Install Python dependencies before building from source:
 python -m pip install -r requirements.txt
 ```
 
-Install development dependencies and run the regression tests:
-
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest
-```
-
----
-
 ## PBO Prefix Support
 
 RaG PBO Builder supports addon prefix files.
@@ -670,15 +661,13 @@ This builds `dist\installer\RaG_PBO_Tools_Setup.exe` and `RaG_PBO_Tools_Setup.ex
 
 Generated `build`, `dist`, log, `.exe`, and installer files are ignored by Git. Put public installers in GitHub Releases instead of committing them to the source tree.
 
-The repository also includes a GitHub Actions workflow. Push a tag such as `v0.8.5-beta` and GitHub will build the Windows installer and checksum, then attach both to the GitHub Release automatically.
-
 To publish the current version from `rag_version.py` without typing the Git tag commands manually:
 
 ```powershell
 .\publish_release.ps1
 ```
 
-The script checks that the working tree is clean, runs tests, builds the local package, checks release readiness, pushes `main`, creates the matching tag such as `v0.8.1-beta`, and pushes that tag. The tag push triggers the GitHub Actions release workflow. If the tag already exists, bump the version instead of reusing the old tag.
+The script checks that the working tree is clean, builds the local installer package, checks release readiness, pushes `main`, creates the matching tag such as `v0.8.5-beta`, and pushes that tag. If the tag already exists, bump the version instead of reusing the old tag.
 
 ---
 

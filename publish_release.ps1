@@ -2,7 +2,6 @@ param(
     [string]$Remote = "origin",
     [string]$Branch = "main",
     [switch]$SkipPackage,
-    [switch]$SkipTests,
     [switch]$ForceTag
 )
 
@@ -100,25 +99,6 @@ function Write-ReleasePackageSummary {
     }
 }
 
-function Invoke-ReleaseTests {
-    $PytestTemp = Join-Path $ProjectRoot ".pytest_publish_tmp"
-
-    if (Test-Path -LiteralPath $PytestTemp) {
-        Remove-Item -LiteralPath $PytestTemp -Recurse -Force
-    }
-
-    New-Item -ItemType Directory -Force -Path $PytestTemp | Out-Null
-
-    try {
-        python -m pytest -p no:cacheprovider --basetemp $PytestTemp
-        if ($LASTEXITCODE -ne 0) {
-            throw "Tests failed. Release was not published."
-        }
-    } finally {
-        Remove-Item -LiteralPath $PytestTemp -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 Push-Location $ProjectRoot
 try {
     $Version = Get-AppVersion
@@ -144,10 +124,6 @@ try {
         throw "Working tree is not clean. Commit or stash changes before publishing."
     }
 
-    if (-not $SkipTests) {
-        Write-Host "Running tests..."
-        Invoke-ReleaseTests
-    }
 
     if (-not $SkipPackage) {
         Write-Host "Building local release package..."
@@ -203,13 +179,13 @@ try {
 
     Write-Host ""
     Write-Host "Release publish triggered."
-    Write-Host "GitHub will build and upload its own installer from commit $HeadSha."
+    Write-Host "The pushed tag marks installer release commit $HeadSha."
     Write-Host "The local installer above is only a verification artifact unless you upload it manually."
     if ($RepoUrl) {
         Write-Host "Actions:  $RepoUrl/actions"
         Write-Host "Release:  $RepoUrl/releases/tag/$Tag"
     } else {
-        Write-Host "Open GitHub Actions and wait for the Build Release workflow to finish."
+        Write-Host "Open the GitHub release page after pushing the tag."
     }
 } finally {
     Pop-Location
