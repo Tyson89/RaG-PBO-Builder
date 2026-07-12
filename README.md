@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.8.6 Beta
+**Version:** 0.8.7 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -32,6 +32,8 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Keep clean `Addons` and `Keys` output folders
 - Save build logs automatically
 - Show build diagnostics for common Binarize, CfgConvert, WRP, signing, and path failures
+- Open warning/error source locations by clicking linked Builder diagnostics
+- Run builds and preflight checks without opening the GUI through the headless command-line interface
 - Run configurable preflight checks before building
 - Preflight checks only files that belong to the selected pack target(s) and are not excluded from the packed PBO
 - Export preflight reports automatically as `.txt` and `.json`
@@ -46,6 +48,9 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`
 - Drop `.pbo` files directly into the inspector window on Windows
 - Convert extracted `.bin` files and rapified material files with `CfgConvert.exe`, while leaving non-config bins such as `texHeaders.bin` alone
+- Compare two PBOs directly with added, changed, removed, and metadata status groups
+- View changed text/config files side by side with highlighted lines and previous/next change navigation
+- Search archive filenames and supported entry contents without extracting the PBO
 
 ---
 
@@ -148,6 +153,12 @@ The inspector can:
 - Extract the full archive
 - Convert extracted `.bin` files to `.cpp` and rapified material files such as `.rvmat` back to readable text with DayZ Tools `CfgConvert.exe`, while skipping `texHeaders.bin`
 - Refuse unsafe extract paths that try to escape the selected output folder
+- Compare two PBO archives without extracting them first
+- Sort comparison results by Added, Changed, Removed, Metadata, then Unchanged
+- Compare readable files side by side with synchronized scrolling and highlighted line changes
+- Jump to the previous or next changed block
+- Compare binary entries by SHA-256, unpacked size, and packing method
+- Search filenames and entry contents across the loaded archive
 
 Stored and BI LZSS-compressed `Cprs` PBO entries are extracted or previewed; unsupported entries are listed but not extracted. `.bin` to `.cpp` conversion, `.bin` preview, and rapified material text conversion require a valid `CfgConvert.exe` path, except `texHeaders.bin`, which is left as binary data. P3D inspection is a metadata scan, not debinarization, and does not recover `model.cfg`; use Mikero DeP3d/ExtractModelCfg for that. In-window drag/drop uses `tkinterdnd2`, which is bundled into the inspector EXE by the build script.
 
@@ -156,6 +167,18 @@ Install Python dependencies before building from source:
 ```powershell
 python -m pip install -r requirements.txt
 ```
+
+## Headless CLI
+
+The Builder executable can build or preflight projects without opening the GUI. Saved GUI settings are used unless overridden by command-line options.
+
+```powershell
+RaG_PBO_Builder.exe build --source P:\MyMod --output D:\Build
+RaG_PBO_Builder.exe preflight --source P:\MyMod --json
+RaG_PBO_Builder.exe build --help
+```
+
+The CLI supports addon selection, tool paths, build toggles, JSON results, log files, and process exit codes for automation.
 
 ## PBO Prefix Support
 

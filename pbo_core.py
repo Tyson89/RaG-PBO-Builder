@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import struct
@@ -401,3 +402,75 @@ def read_pbo_entry_data(pbo_path, entry_name, max_bytes=None):
         return data
 
     raise PboError(f"PBO entry not found: {entry_name}")
+
+
+def get_pbo_entry_sha256(pbo_path, entry):
+    digest = hashlib.sha256()
+    with open(pbo_path, "rb") as source:
+        if entry.packing_method == PBO_STORED_METHOD:
+            source.seek(entry.offset)
+            remaining = entry.data_size
+            while remaining:
+                chunk = source.read(min(COPY_CHUNK_SIZE, remaining))
+                if not chunk:
+                    raise PboError(f"Unexpected end of PBO data while hashing: {entry.name}")
+                digest.update(chunk)
+                remaining -= len(chunk)
+        elif is_pbo_entry_supported(entry):
+            digest.update(read_pbo_entry_payload(source, entry))
+        else:
+            source.seek(entry.offset)
+            data = source.read(entry.data_size)
+            if len(data) != entry.data_size:
+                raise PboError(f"Unexpected end of PBO data while hashing: {entry.name}")
+            digest.update(data)
+    return digest.hexdigest()
+
+
+def compare_pbo_archives(left_path, right_path):
+    left_archive = read_pbo_archive(left_path)
+    right_archive = read_pbo_archive(right_path)
+    left_entries = {entry.name.replace("\\", "/").casefold(): entry for entry in left_archive["entries"]}
+    right_entries = {entry.name.replace("\\", "/").casefold(): entry for entry in right_archive["entries"]}
+    results = []
+
+    for key in sorted(set(left_entries) | set(right_entries)):
+        left = left_entries.get(key)
+        right = right_entries.get(key)
+        left_hash = get_pbo_entry_sha256(left_path, left) if left else ""
+        right_hash = get_pbo_entry_sha256(right_path, right) if right else ""
+        if left is None:
+            status = "added"
+        elif right is None:
+            status = "removed"
+        else:
+            if left_hash != right_hash:
+                status = "changed"
+            elif left.name != right.name or left.packing_method != right.packing_method or left.timestamp != right.timestamp:
+                status = "metadata"
+            else:
+                status = "unchanged"
+        entry = right or left
+        results.append({
+            "status": status,
+            "name": entry.name,
+            "left_name": left.name if left else "",
+            "right_name": right.name if right else "",
+            "left_hash": left_hash,
+            "right_hash": right_hash,
+            "left_size": get_pbo_entry_unpacked_size(left) if left else None,
+            "right_size": get_pbo_entry_unpacked_size(right) if right else None,
+            "left_method": get_pbo_method_label(left.packing_method) if left else "",
+            "right_method": get_pbo_method_label(right.packing_method) if right else "",
+        })
+
+    counts = {status: 0 for status in ["added", "removed", "changed", "metadata", "unchanged"]}
+    for item in results:
+        counts[item["status"]] += 1
+    property_changes = {}
+    for key in sorted(set(left_archive["properties"]) | set(right_archive["properties"])):
+        left_value = left_archive["properties"].get(key)
+        right_value = right_archive["properties"].get(key)
+        if left_value != right_value:
+            property_changes[key] = {"left": left_value, "right": right_value}
+    return {"left": left_archive, "right": right_archive, "counts": counts, "property_changes": property_changes, "entries": results}

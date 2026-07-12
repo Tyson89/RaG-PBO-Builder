@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.7 Beta
+
+- Added a headless Builder CLI with `build` and `preflight` commands, saved-setting defaults, option overrides, JSON output, log files, and automation-friendly exit codes.
+- Added clickable Builder warning/error diagnostics that open resolved source files and use exact line navigation when Visual Studio Code is available.
+- Renamed the `Binarize P3D` Builder option to `Binarize` because the pipeline also processes terrain WRP files.
+- Added Inspector archive-wide filename and content search without extraction.
+- Added direct PBO-to-PBO comparison using SHA-256 content hashes, sizes, packing methods, timestamps, filename case, and header properties.
+- Added a dark side-by-side comparison viewer for readable files with aligned line numbers and added, changed, and removed highlighting.
+- Added synchronized comparison scrolling from either pane scrollbar or the mouse wheel.
+- Added previous/next changed-block navigation with wraparound and current-change highlighting.
+- Sorted comparison files by Added, Changed, Removed, Metadata, then Unchanged, with alphabetical paths inside each group.
+- Added direct binary-entry comparison details without extracting files.
+- Moved large PBO comparison hashing to a background worker so the Inspector remains responsive.
+
 ## 0.8.6 Beta
 
 - Installer now installs RaG PBO Inspector as an optional selected-by-default component.

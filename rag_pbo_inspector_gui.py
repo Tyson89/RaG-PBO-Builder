@@ -5,15 +5,18 @@ Standalone graphite UI for inspecting and extracting DayZ PBO archives.
 """
 
 import os
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from pbo_core import (
     PboError,
+    compare_pbo_archives,
     extract_pbo_files,
     format_byte_size,
     format_pbo_timestamp,
@@ -41,6 +44,7 @@ from rag_inspector_settings import (
     save_settings,
 )
 from rag_inspector_viewer import (
+    PboComparisonWindow,
     TextViewerWindow,
     decode_text_data,
     get_entry_path_parts,
@@ -87,12 +91,18 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.entries = []
         self.pbo_path_var = tk.StringVar(value="")
         self.output_dir_var = tk.StringVar(value="")
+        self.compare_pbo_path_var = tk.StringVar(value="")
+        self.search_var = tk.StringVar(value="")
+        self.search_contents_var = tk.BooleanVar(value=True)
+        self.search_status_var = tk.StringVar(value="")
         self.cfgconvert_exe_var = tk.StringVar(value=self.saved_settings.get("cfgconvert_exe", find_cfgconvert()))
         self.convert_bin_var = tk.BooleanVar(value=self.saved_settings.get("convert_bin_to_cpp", True))
         self.summary_var = tk.StringVar(value="No PBO loaded")
         self.drop_registered_widgets = []
         self.entry_iid_to_index = {}
         self.folder_iids = set()
+        self.comparison_queue = queue.Queue()
+        self.comparison_running = False
 
         self.title(APP_TITLE)
         self.geometry("1040x760")
@@ -199,18 +209,24 @@ class PboInspectorApp(DND_ROOT_CLASS):
         pbo_entry.bind("<Return>", lambda event: self.inspect_pbo(), add="+")
         ttk.Button(path_frame, text="Browse", command=self.choose_pbo).grid(row=0, column=2, sticky="e", pady=4)
 
-        ttk.Label(path_frame, text="Extract to", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", pady=4)
-        output_entry = ttk.Entry(path_frame, textvariable=self.output_dir_var)
-        output_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=4)
-        ttk.Button(path_frame, text="Browse", command=self.choose_output_dir).grid(row=1, column=2, sticky="e", pady=4)
+        ttk.Label(path_frame, text="Compare with", style="FieldName.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        compare_entry = ttk.Entry(path_frame, textvariable=self.compare_pbo_path_var)
+        compare_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=4)
+        compare_entry.bind("<Return>", lambda event: self.compare_pbos(), add="+")
+        ttk.Button(path_frame, text="Browse", command=self.choose_compare_pbo).grid(row=1, column=2, sticky="e", pady=4)
 
-        ttk.Label(path_frame, text="CfgConvert.exe", style="FieldName.TLabel").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Label(path_frame, text="Extract to", style="FieldName.TLabel").grid(row=2, column=0, sticky="w", pady=4)
+        output_entry = ttk.Entry(path_frame, textvariable=self.output_dir_var)
+        output_entry.grid(row=2, column=1, sticky="ew", padx=(8, 8), pady=4)
+        ttk.Button(path_frame, text="Browse", command=self.choose_output_dir).grid(row=2, column=2, sticky="e", pady=4)
+
+        ttk.Label(path_frame, text="CfgConvert.exe", style="FieldName.TLabel").grid(row=3, column=0, sticky="w", pady=4)
         cfgconvert_entry = ttk.Entry(path_frame, textvariable=self.cfgconvert_exe_var)
-        cfgconvert_entry.grid(row=2, column=1, sticky="ew", padx=(8, 8), pady=4)
-        ttk.Button(path_frame, text="Browse", command=self.choose_cfgconvert_exe).grid(row=2, column=2, sticky="e", pady=4)
+        cfgconvert_entry.grid(row=3, column=1, sticky="ew", padx=(8, 8), pady=4)
+        ttk.Button(path_frame, text="Browse", command=self.choose_cfgconvert_exe).grid(row=3, column=2, sticky="e", pady=4)
 
         convert_check = tk.Checkbutton(path_frame, text="", variable=self.convert_bin_var, command=self.on_convert_option_changed, indicatoron=False, selectcolor=GRAPHITE_CARD_SOFT, relief="flat", borderwidth=0, padx=12, pady=7, font=("Segoe UI", 10), cursor="hand2", anchor="w", justify="left", width=72)
-        convert_check.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(4, 0))
+        convert_check.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(4, 0))
         self.convert_check = convert_check
         self.refresh_convert_check()
 
@@ -219,6 +235,7 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.make_button(action_frame, "Extract all", self.extract_all, primary=True)
         self.make_button(action_frame, "Extract selected", self.extract_selected)
         self.make_button(action_frame, "View selected", self.view_selected_entry)
+        self.compare_button = self.make_button(action_frame, "Compare PBOs", self.compare_pbos)
         self.make_button(action_frame, "Reload PBO", self.inspect_pbo)
         self.make_button(action_frame, "Open output", self.open_output_folder)
         ttk.Label(action_frame, textvariable=self.summary_var, foreground=GRAPHITE_MUTED).pack(side="left", padx=(6, 0))
@@ -226,7 +243,19 @@ class PboInspectorApp(DND_ROOT_CLASS):
         content_frame = ttk.LabelFrame(outer, text="Contents", padding=10)
         content_frame.pack(fill="both", expand=True, pady=(0, 10))
         content_frame.columnconfigure(0, weight=1)
-        content_frame.rowconfigure(0, weight=1)
+        content_frame.rowconfigure(1, weight=1)
+
+        search_frame = ttk.Frame(content_frame)
+        search_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        search_frame.columnconfigure(1, weight=1)
+        ttk.Label(search_frame, text="Search").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.grid(row=0, column=1, sticky="ew")
+        search_entry.bind("<Return>", lambda event: self.search_archive(), add="+")
+        ttk.Checkbutton(search_frame, text="Contents", variable=self.search_contents_var).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(search_frame, text="Search", command=self.search_archive).grid(row=0, column=3, padx=(8, 0))
+        ttk.Button(search_frame, text="Clear", command=self.clear_search).grid(row=0, column=4, padx=(8, 0))
+        ttk.Label(search_frame, textvariable=self.search_status_var, foreground=GRAPHITE_MUTED).grid(row=0, column=5, padx=(8, 0))
 
         columns = ("size", "method", "timestamp")
         self.tree = ttk.Treeview(content_frame, columns=columns, show="tree headings", selectmode="extended", style="Pbo.Treeview")
@@ -238,13 +267,13 @@ class PboInspectorApp(DND_ROOT_CLASS):
         self.tree.column("size", width=110, anchor="e")
         self.tree.column("method", width=120, anchor="w")
         self.tree.column("timestamp", width=150, anchor="w")
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.grid(row=1, column=0, sticky="nsew")
         self.tree.bind("<Double-1>", self.on_tree_double_click, add="+")
         self.tree.tag_configure("folder", foreground=GRAPHITE_TEXT, font=("Segoe UI", 10, "bold"))
         self.tree.tag_configure("file", foreground=GRAPHITE_TEXT)
 
         tree_scroll = ttk.Scrollbar(content_frame, command=self.tree.yview)
-        tree_scroll.grid(row=0, column=1, sticky="ns")
+        tree_scroll.grid(row=1, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=tree_scroll.set)
 
         log_frame = ttk.LabelFrame(outer, text="Inspector log", padding=10)
@@ -312,6 +341,110 @@ class PboInspectorApp(DND_ROOT_CLASS):
 
         if path:
             self.output_dir_var.set(path)
+
+    def choose_compare_pbo(self):
+        path = filedialog.askopenfilename(title="Select comparison PBO", initialdir=get_initial_dir_from_value(self.compare_pbo_path_var.get(), self.pbo_path_var.get()), filetypes=[("PBO files", "*.pbo"), ("All files", "*.*")], parent=self)
+        if path:
+            self.compare_pbo_path_var.set(path)
+
+    def compare_pbos(self):
+        left = self.pbo_path_var.get().strip()
+        right = self.compare_pbo_path_var.get().strip()
+        if not left or not right:
+            messagebox.showerror(APP_TITLE, "Select both PBO files to compare.", parent=self)
+            return
+        if self.comparison_running:
+            return
+        self.comparison_running = True
+        self.compare_button.configure(state="disabled")
+        self.log(f"Comparing PBO contents: {left} <-> {right}")
+
+        def worker():
+            try:
+                self.comparison_queue.put(("done", compare_pbo_archives(left, right)))
+            except Exception as error:
+                self.comparison_queue.put(("error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self.poll_comparison)
+
+    def poll_comparison(self):
+        try:
+            result_type, payload = self.comparison_queue.get_nowait()
+        except queue.Empty:
+            self.after(100, self.poll_comparison)
+            return
+        self.comparison_running = False
+        self.compare_button.configure(state="normal")
+        if result_type == "error":
+            messagebox.showerror(APP_TITLE, payload, parent=self)
+            return
+        PboComparisonWindow(self, payload, self.load_comparison_entry)
+        self.log(f"Comparison ready: {payload['left']['path']} <-> {payload['right']['path']}")
+
+    def load_comparison_entry(self, pbo_path, entry_name, side, comparison_item):
+        archive = read_pbo_archive(pbo_path)
+        entry = next((item for item in archive["entries"] if item.name == entry_name), None)
+        if not entry:
+            raise PboError(f"PBO entry not found: {entry_name}")
+        suffix = Path(entry.name).suffix.lower()
+        if suffix == ".bin":
+            return self.load_bin_preview(entry, pbo_path)
+        if is_text_viewable_entry(entry.name):
+            data = read_pbo_entry_data(pbo_path, entry.name, MAX_TEXT_PREVIEW_BYTES)
+            return self.load_text_preview(entry, data)
+        size = comparison_item[f"{side}_size"]
+        digest = comparison_item[f"{side}_hash"]
+        content = "\n".join([
+            "Binary file",
+            f"Path: {entry.name}",
+            f"Size: {format_byte_size(size)}",
+            f"Packing method: {get_pbo_method_label(entry.packing_method)}",
+            f"SHA-256: {digest}",
+            "",
+            "Text diff unavailable for this file type.",
+            "Content was compared directly inside the PBO by SHA-256.",
+        ])
+        return content, f"{entry.name} | binary | {format_byte_size(size)}"
+
+    def search_archive(self):
+        if not self.ensure_current_archive_loaded():
+            return
+        query = self.search_var.get().strip()
+        if not query:
+            self.clear_search()
+            return
+        needle = query.casefold()
+        matched_indices = []
+        content_matches = 0
+        skipped = 0
+        for index, entry in enumerate(self.entries):
+            name_match = needle in entry.name.casefold()
+            content_match = False
+            if self.search_contents_var.get() and is_pbo_entry_supported(entry):
+                if get_pbo_entry_unpacked_size(entry) <= MAX_TEXT_PREVIEW_BYTES:
+                    try:
+                        data = read_pbo_entry_data(self.pbo_path_var.get().strip(), entry.name, MAX_TEXT_PREVIEW_BYTES)
+                        text, _encoding = decode_text_data(data)
+                        content_match = needle in text.casefold()
+                    except Exception:
+                        skipped += 1
+                else:
+                    skipped += 1
+            if name_match or content_match:
+                matched_indices.append(index)
+                if content_match:
+                    content_matches += 1
+        self.populate_tree(matched_indices)
+        suffix = f", {skipped} content scan(s) skipped" if skipped else ""
+        self.search_status_var.set(f"{len(matched_indices)} match(es){suffix}")
+        self.log(f"Search '{query}': {len(matched_indices)} file match(es), {content_matches} content match(es){suffix}.")
+
+    def clear_search(self):
+        self.search_var.set("")
+        self.search_status_var.set("")
+        if self.archive:
+            self.populate_tree(range(len(self.entries)))
 
     def choose_cfgconvert_exe(self):
         path = filedialog.askopenfilename(title="Select CfgConvert.exe", initialdir=get_initial_dir_from_value(self.cfgconvert_exe_var.get()), filetypes=[("CfgConvert.exe", "CfgConvert.exe"), ("Executable", "*.exe"), ("All files", "*.*")], parent=self)
@@ -401,10 +534,6 @@ class PboInspectorApp(DND_ROOT_CLASS):
 
         self.archive = archive
         self.entries = list(archive["entries"])
-        self.tree.delete(*self.tree.get_children())
-        self.entry_iid_to_index = {}
-        self.folder_iids = set()
-
         total_bytes = sum(get_pbo_entry_unpacked_size(entry) for entry in self.entries)
         unsupported = 0
         compressed = 0
@@ -416,7 +545,8 @@ class PboInspectorApp(DND_ROOT_CLASS):
             if not is_pbo_entry_supported(entry):
                 unsupported += 1
 
-            self.add_entry_to_tree(index, entry)
+        self.populate_tree(range(len(self.entries)))
+        self.search_status_var.set("")
 
         prefix = archive["properties"].get("prefix", "")
         footer = archive.get("footer_size", 0)
@@ -431,6 +561,13 @@ class PboInspectorApp(DND_ROOT_CLASS):
 
         if unsupported:
             self.log(f"WARNING: {unsupported} unsupported entry/entries can be listed but not extracted.")
+
+    def populate_tree(self, indices):
+        self.tree.delete(*self.tree.get_children())
+        self.entry_iid_to_index = {}
+        self.folder_iids = set()
+        for index in sorted(indices, key=lambda item: self.entries[item].name.replace("\\", "/").lower()):
+            self.add_entry_to_tree(index, self.entries[index])
 
     def add_entry_to_tree(self, index, entry):
         parts = get_entry_path_parts(entry.name)
@@ -607,7 +744,7 @@ class PboInspectorApp(DND_ROOT_CLASS):
         details = f"{entry.name} | {format_byte_size(get_pbo_entry_unpacked_size(entry))} | {encoding}"
         return content, details
 
-    def load_bin_preview(self, entry):
+    def load_bin_preview(self, entry, pbo_path=None):
         if is_texheaders_bin_path(entry.name):
             raise PboError("texHeaders.bin is not a config bin and cannot be converted with CfgConvert. Leave it as .bin.")
 
@@ -616,7 +753,7 @@ class PboInspectorApp(DND_ROOT_CLASS):
         if not cfgconvert_exe or not os.path.isfile(cfgconvert_exe):
             raise PboError("CfgConvert.exe is required to preview .bin files as text.")
 
-        data = read_pbo_entry_data(self.pbo_path_var.get().strip(), entry.name, MAX_TEXT_PREVIEW_BYTES)
+        data = read_pbo_entry_data(pbo_path or self.pbo_path_var.get().strip(), entry.name, MAX_TEXT_PREVIEW_BYTES)
 
         with tempfile.TemporaryDirectory(prefix="rag_pbo_preview_") as temp_dir:
             bin_name = Path(entry.name.replace("\\", "/")).name or "preview.bin"

@@ -7,7 +7,7 @@ Features:
 - Build selected addon folders into PBOs
 - If source root contains config.cpp, build source root as one addon
 - Independent named Project Source and Build Output path presets
-- Optional P3D binarization with DayZ Tools binarize.exe
+- Optional P3D and WRP binarization with DayZ Tools binarize.exe
 - Optional config.cpp to config.bin conversion with CfgConvert.exe, including nested config.cpp files
 - Optional PBO signing with DSSignFile.exe
 - Skip unchanged addons unless Force rebuild is enabled
@@ -22,7 +22,9 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -295,6 +297,7 @@ class RaGPboBuilderApp(tk.Tk):
         self.current_error_count = 0
         self.current_warning_count = 0
         self.current_info_count = 0
+        self.log_link_counter = 0
 
         self._build_ui()
         self.update_path_preset_dropdowns()
@@ -485,7 +488,7 @@ class RaGPboBuilderApp(tk.Tk):
             options.columnconfigure(col, minsize=size)
         options.columnconfigure(4, weight=1)
         ttk.Label(options, text="Pipeline", style="FieldMuted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
-        self._add_checkbutton(options, "Binarize P3D", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D files.")
+        self._add_checkbutton(options, "Binarize", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D or WRP files.")
         self._add_checkbutton(options, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
         self._add_checkbutton(options, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
         self._add_checkbutton(options, "Update PAA", self.update_paa_from_sources_var, 0, 4, "Use ImageToPAA.exe to update missing or stale staged .paa files from newer .png/.tga source textures. Source files are not overwritten.")
@@ -1254,7 +1257,7 @@ class RaGPboBuilderApp(tk.Tk):
         if self.use_binarize_var.get():
             path = self.binarize_exe_var.get().strip()
             if not path:
-                raise BuildError("Select binarize.exe or disable P3D binarize.")
+                raise BuildError("Select binarize.exe or disable Binarize.")
             if not os.path.isfile(path):
                 raise BuildError(f"binarize.exe does not exist: {path}")
         if self.convert_config_var.get():
@@ -1424,7 +1427,7 @@ class RaGPboBuilderApp(tk.Tk):
             if not self.line_passes_log_filter(line):
                 continue
             tag = self.get_log_tag(line)
-            self.log_text.insert("end", line + chr(10), tag if tag else None)
+            self.insert_log_line(line, tag)
 
         self.log_text.see("end")
 
@@ -1435,6 +1438,67 @@ class RaGPboBuilderApp(tk.Tk):
         self.log_text.tag_configure("log_section", foreground=GRAPHITE_MUTED)
         self.log_text.tag_configure("log_tool", foreground=GRAPHITE_PREFLIGHT_ACTIVE)
         self.log_text.tag_configure("log_info", foreground=GRAPHITE_MUTED)
+
+    def resolve_diagnostic_source(self, line):
+        if self.get_log_tag(line) not in {"log_error", "log_warning"}:
+            return None
+        match = re.search(r"(?P<label>[^:;]+):\s*line\s+(?P<line>\d+)", line, re.IGNORECASE)
+        if match:
+            candidate = match.group("label").strip()
+            for marker in (" in ", " at "):
+                if marker in candidate.lower():
+                    candidate = candidate[candidate.lower().rfind(marker) + len(marker):].strip()
+            resolved = self.resolve_source_path(candidate)
+            if resolved:
+                return resolved, int(match.group("line"))
+        absolute = re.search(r"(?:File:\s*)?([A-Za-z]:[\\/][^\r\n]+?\.(?:cpp|c|hpp|h|cfg|rvmat|layout|xml|json|p3d|wrp))(?=[:;)]|$)", line, re.IGNORECASE)
+        if absolute:
+            resolved = self.resolve_source_path(absolute.group(1).strip())
+            if resolved:
+                return resolved, 0
+        return None
+
+    def resolve_source_path(self, candidate):
+        candidate = candidate.strip().strip("'\"").replace("/", os.sep).replace("\\", os.sep)
+        if os.path.isabs(candidate) and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+        roots = [path for _name, path in self.current_addon_targets]
+        source_root = self.source_root_var.get().strip()
+        if source_root:
+            roots.append(source_root)
+        for root in roots:
+            path = os.path.abspath(os.path.join(root, candidate))
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def insert_log_line(self, line, tag=""):
+        start = self.log_text.index("end-1c")
+        self.log_text.insert("end", line + chr(10), tag if tag else None)
+        source = self.resolve_diagnostic_source(line)
+        if not source:
+            return
+        end = self.log_text.index("end-1c")
+        self.log_link_counter += 1
+        link_tag = f"diagnostic_link_{self.log_link_counter}"
+        self.log_text.tag_add(link_tag, start, end)
+        self.log_text.tag_configure(link_tag, underline=True)
+        self.log_text.tag_bind(link_tag, "<Enter>", lambda event: self.log_text.configure(cursor="hand2"))
+        self.log_text.tag_bind(link_tag, "<Leave>", lambda event: self.log_text.configure(cursor="xterm"))
+        self.log_text.tag_bind(link_tag, "<Button-1>", lambda event, item=source: self.open_diagnostic_source(*item))
+
+    def open_diagnostic_source(self, path, line_number=0):
+        try:
+            code_exe = shutil.which("code")
+            if code_exe:
+                target = f"{path}:{line_number}" if line_number else path
+                subprocess.Popen([code_exe, "-g", target])
+            elif os.name == "nt":
+                os.startfile(path)
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, str(e))
 
     def get_log_tag(self, line):
         text = line.strip()
@@ -1627,7 +1691,7 @@ class RaGPboBuilderApp(tk.Tk):
                 self.current_info_count += 1
 
             if self.line_passes_log_filter(line):
-                self.log_text.insert("end", line + chr(10), tag if tag else None)
+                self.insert_log_line(line, tag)
 
         self.log_text.see("end")
         try:
@@ -1790,5 +1854,8 @@ class RaGPboBuilderApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        from rag_pbo_builder_cli import run_cli
+        raise SystemExit(run_cli(sys.argv[1:]))
     app = RaGPboBuilderApp()
     app.mainloop()
