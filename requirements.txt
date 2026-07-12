@@ -1,2 +1,0 @@
-pyinstaller>=6.20.0
-tkinterdnd2>=0.4.3

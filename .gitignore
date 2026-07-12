@@ -1,25 +1,22 @@
-# Python
 __pycache__/
+/AGENTS.md
 *.py[cod]
 .pytest_cache/
-
-# PyInstaller
 build/
 dist/
-*.spec
-*.exe
-
-# Logs and local app output
-*.log
+assets/
+installer/
+releases/
+tests/
 *_preflight_report.txt
 *_preflight_report.json
-
-# Local/editor noise
 .idea/
 .vscode/
 Thumbs.db
 desktop.ini
-
-# Release binaries are uploaded to GitHub Releases, not committed.
-releases/*
-!releases/.gitkeep
+*.spec
+*.log
+*.tmp
+*.bak
+*.zip
+*.ps1
