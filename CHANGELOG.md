@@ -2,6 +2,9 @@
 
 ## 0.8.5 Beta
 
+- Added an Inno Setup installer for RaG PBO Builder and RaG PBO Inspector.
+- Changed the Builder update button to download a SHA-256 verified installer from GitHub Releases and launch it directly.
+- Switched release packaging and GitHub Actions release upload to installer-only output with a checksum asset.
 - Fixed temp directory safety validation so normal workspace paths containing a `DayZ` folder are no longer incorrectly blocked.
 - Kept temp directory protection active for real game/tool install folders such as `steamapps\common\DayZ`, `steamapps\common\DayZ Tools`, Windows, and Program Files paths.
 - Updated script reference preflight checks to ignore runtime format placeholders such as `%1.rvmat`, avoiding false missing-file errors for paths built with `string.Format`.

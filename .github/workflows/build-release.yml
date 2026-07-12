@@ -28,6 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
       - name: Build release package
         shell: pwsh
         run: |
@@ -41,9 +46,10 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RaG-PBO-Tools-Windows
+          name: RaG-PBO-Tools-Installer
           path: |
-            releases/RaG_PBO_Tools_*.zip
+            dist/installer/RaG_PBO_Tools_Setup.exe
+            dist/installer/RaG_PBO_Tools_Setup.exe.sha256
 
       - name: Upload GitHub release assets
         if: startsWith(github.ref, 'refs/tags/')
@@ -52,14 +58,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $Tag = $env:GITHUB_REF_NAME
-          $Zip = Get-ChildItem -LiteralPath releases -Filter "RaG_PBO_Tools_*.zip" | Select-Object -First 1
-          if (-not $Zip) {
-            throw "Release zip was not created."
+          $Installer = Get-Item -LiteralPath "dist/installer/RaG_PBO_Tools_Setup.exe" -ErrorAction SilentlyContinue
+          $InstallerHash = Get-Item -LiteralPath "dist/installer/RaG_PBO_Tools_Setup.exe.sha256" -ErrorAction SilentlyContinue
+          if (-not $Installer -or -not $InstallerHash) {
+            throw "Installer or checksum was not created."
           }
 
+          $Assets = @($Installer.FullName, $InstallerHash.FullName)
           gh release view $Tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $Tag $Zip.FullName --clobber
+            gh release upload $Tag @Assets --clobber
           } else {
-            gh release create $Tag $Zip.FullName --title $Tag --notes "Windows executables for RaG PBO Builder and RaG PBO Inspector."
+            gh release create $Tag @Assets --title $Tag --notes "Windows installer for RaG PBO Builder and RaG PBO Inspector."
           }

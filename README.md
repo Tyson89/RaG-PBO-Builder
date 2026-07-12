@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.8.4 Beta
+**Version:** 0.8.5 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -40,7 +40,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Save named presets for Project Source and Build Output
 - Load Project Source and Build Output presets independently for faster project switching
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
-- Check GitHub releases from the Builder window to see whether a newer version is available
+- Check GitHub releases from the Builder window, download a SHA-256 verified installer, and launch the update
 - Auto-detect DayZ Tools from Steam library folders, including non-C-drive Steam libraries
 - Includes additional terrain and mapper-focused WRP checks
 - Inspect and extract existing `.pbo` archives with the standalone `RaG_PBO_Inspector.exe`
@@ -666,11 +666,11 @@ To make a public download package for GitHub Releases:
 .\package_release.ps1
 ```
 
-This creates a versioned zip in `releases\` containing both EXEs, the README, licence, changelog, and SHA256 checksums.
+This builds `dist\installer\RaG_PBO_Tools_Setup.exe` and `RaG_PBO_Tools_Setup.exe.sha256`. Releases are installer-only from this point forward.
 
-Generated `build`, `dist`, log, `.exe`, and release package files are ignored by Git. Put public binaries in GitHub Releases instead of committing them to the source tree.
+Generated `build`, `dist`, log, `.exe`, and installer files are ignored by Git. Put public installers in GitHub Releases instead of committing them to the source tree.
 
-The repository also includes a GitHub Actions workflow. Push a tag such as `v0.7.11-beta` and GitHub will build the Windows package and attach the zip to the GitHub Release automatically.
+The repository also includes a GitHub Actions workflow. Push a tag such as `v0.8.5-beta` and GitHub will build the Windows installer and checksum, then attach both to the GitHub Release automatically.
 
 To publish the current version from `rag_version.py` without typing the Git tag commands manually:
 

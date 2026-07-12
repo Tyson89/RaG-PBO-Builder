@@ -75,23 +75,18 @@ function Get-RepoUrl {
     return ""
 }
 
-function Get-ReleasePackagePath {
-    param([string]$Version)
-
-    $SafeVersion = $Version -replace "[^A-Za-z0-9._-]+", "_"
-    return Join-Path (Join-Path $ProjectRoot "releases") "RaG_PBO_Tools_$SafeVersion.zip"
+function Get-InstallerPath {
+    return Join-Path (Join-Path $ProjectRoot "dist") "installer\RaG_PBO_Tools_Setup.exe"
 }
 
 function Write-ReleasePackageSummary {
-    param([string]$ZipPath)
-
-    $BuilderExe = Join-Path (Join-Path $ProjectRoot "dist") "RaG_PBO_Builder.exe"
-    $InspectorExe = Join-Path (Join-Path $ProjectRoot "dist") "RaG_PBO_Inspector.exe"
+    $InstallerExe = Get-InstallerPath
+    $InstallerHash = "$InstallerExe.sha256"
 
     Write-Host ""
     Write-Host "Local build outputs:"
 
-    foreach ($Path in @($BuilderExe, $InspectorExe, $ZipPath)) {
+    foreach ($Path in @($InstallerExe, $InstallerHash)) {
         if (-not (Test-Path -LiteralPath $Path)) {
             throw "Expected release output missing: $Path"
         }
@@ -130,8 +125,6 @@ try {
     $VersionToken = ConvertTo-VersionToken $Version
     $Tag = "v$VersionToken"
     $RepoUrl = Get-RepoUrl $Remote
-    $ZipPath = Get-ReleasePackagePath $Version
-
     Write-Host "RaG PBO Tools release publish"
     Write-Host "Version: $Version"
     Write-Host "Tag:     $Tag"
@@ -161,7 +154,7 @@ try {
         & (Join-Path $ProjectRoot "package_release.ps1")
     }
 
-    Write-ReleasePackageSummary $ZipPath
+    Write-ReleasePackageSummary
 
     Write-Host "Checking release readiness..."
     & (Join-Path $ProjectRoot "check_release_ready.ps1") -SkipPackage
@@ -210,8 +203,8 @@ try {
 
     Write-Host ""
     Write-Host "Release publish triggered."
-    Write-Host "GitHub will build and upload its own release zip from commit $HeadSha."
-    Write-Host "The local zip above is only a verification package unless you upload it manually."
+    Write-Host "GitHub will build and upload its own installer from commit $HeadSha."
+    Write-Host "The local installer above is only a verification artifact unless you upload it manually."
     if ($RepoUrl) {
         Write-Host "Actions:  $RepoUrl/actions"
         Write-Host "Release:  $RepoUrl/releases/tag/$Tag"

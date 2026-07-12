@@ -5,7 +5,6 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ReleaseRoot = Join-Path $ProjectRoot "releases"
 $DistRoot = Join-Path $ProjectRoot "dist"
 
 function Get-AppVersion {
@@ -84,8 +83,8 @@ function Assert-FileContains {
 }
 
 $Version = Get-AppVersion
-$SafeVersion = $Version -replace "[^A-Za-z0-9._-]+", "_"
-$ZipPath = Join-Path $ReleaseRoot "RaG_PBO_Tools_$SafeVersion.zip"
+$InstallerPath = Join-Path $DistRoot "installer\RaG_PBO_Tools_Setup.exe"
+$InstallerChecksumPath = "$InstallerPath.sha256"
 
 Write-Host "Release readiness check"
 Write-Host "Version: $Version"
@@ -124,44 +123,15 @@ if (-not $SkipPackage) {
     & (Join-Path $ProjectRoot "package_release.ps1") -SkipBuild
 }
 
-$RequiredPaths = @(
-    (Join-Path $DistRoot "RaG_PBO_Builder.exe"),
-    (Join-Path $DistRoot "RaG_PBO_Inspector.exe"),
-    $ZipPath
-)
-
-foreach ($Path in $RequiredPaths) {
+foreach ($Path in @($InstallerPath, $InstallerChecksumPath)) {
     if (-not (Test-Path -LiteralPath $Path)) {
-        throw "Required release output missing: $Path"
+        throw "Required installer output missing: $Path"
     }
 }
 
-$ExtractRoot = $env:RUNNER_TEMP
-if (-not $ExtractRoot) {
-    $ExtractRoot = [System.IO.Path]::GetTempPath()
+$InstallerHashContent = Get-Content -LiteralPath $InstallerChecksumPath -Raw -Encoding ASCII
+if (-not $InstallerHashContent.Contains("RaG_PBO_Tools_Setup.exe")) {
+    throw "Installer checksum does not include RaG_PBO_Tools_Setup.exe."
 }
 
-$ExtractDir = Join-Path $ExtractRoot "rag-release-ready-check"
-
-if (Test-Path -LiteralPath $ExtractDir) {
-    Remove-Item -LiteralPath $ExtractDir -Recurse -Force
-}
-
-New-Item -ItemType Directory -Path $ExtractDir | Out-Null
-Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
-
-foreach ($Name in @("RaG_PBO_Builder.exe", "RaG_PBO_Inspector.exe", "SHA256SUMS.txt")) {
-    $Path = Join-Path $ExtractDir $Name
-    if (-not (Test-Path -LiteralPath $Path)) {
-        throw "Release zip is missing: $Name"
-    }
-}
-
-$ChecksumContent = Get-Content -LiteralPath (Join-Path $ExtractDir "SHA256SUMS.txt") -Raw -Encoding ASCII
-foreach ($Name in @("RaG_PBO_Builder.exe", "RaG_PBO_Inspector.exe")) {
-    if (-not $ChecksumContent.Contains($Name)) {
-        throw "SHA256SUMS.txt does not include $Name."
-    }
-}
-
-Write-Host "Release readiness check passed: $ZipPath"
+Write-Host "Release readiness check passed: $InstallerPath"

@@ -2,8 +2,10 @@ import pytest
 
 from rag_update_check import (
     is_remote_version_newer,
+    parse_checksum,
     parse_version_key,
     select_latest_release,
+    select_latest_update,
 )
 
 
@@ -36,3 +38,32 @@ def test_select_latest_release_includes_beta_prereleases():
 def test_select_latest_release_rejects_empty_release_list():
     with pytest.raises(ValueError, match="No published versioned"):
         select_latest_release([])
+
+
+
+def test_select_latest_update_requires_newer_installer_asset():
+    update = select_latest_update(
+        [
+            {"tag_name": "v0.8.5-beta", "assets": [{"name": "RaG_PBO_Tools_Setup.exe", "browser_download_url": "old"}]},
+            {"tag_name": "v0.8.6-beta", "name": "0.8.6 Beta", "body": "notes", "html_url": "release", "assets": [
+                {"name": "RaG_PBO_Tools_Setup.exe", "browser_download_url": "new", "digest": "sha256:" + "a" * 64},
+            ]},
+        ],
+        "0.8.5 Beta",
+    )
+
+    assert update["version"] == "v0.8.6-beta"
+    assert update["name"] == "0.8.6 Beta"
+    assert update["installer"]["browser_download_url"] == "new"
+
+
+def test_parse_checksum_prefers_matching_installer_name():
+    checksum = parse_checksum(
+        """
+1111111111111111111111111111111111111111111111111111111111111111  other.exe
+2222222222222222222222222222222222222222222222222222222222222222  RaG_PBO_Tools_Setup.exe
+""",
+        "RaG_PBO_Tools_Setup.exe",
+    )
+
+    assert checksum == "2" * 64
