@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.6 Beta
+
+- Installer now installs RaG PBO Inspector as an optional selected-by-default component.
+- Switched app/build icon references to the smaller installer icon so Inno Setup can build successfully.
+
 ## 0.8.5 Beta
 
 - Removed GitHub Actions workflows and the tracked test suite from the project.

@@ -62,7 +62,7 @@ except Exception:
 
 
 APP_TITLE = "RaG PBO Inspector"
-APP_ICON_FILE = os.path.join("assets", "HEADONLY_SQUARE_2k.ico")
+APP_ICON_FILE = os.path.join("assets", "installer.ico")
 MAX_TEXT_PREVIEW_BYTES = 5 * 1024 * 1024
 MAX_P3D_INSPECT_BYTES = 128 * 1024 * 1024
 GRAPHITE_BG = "#24262b"

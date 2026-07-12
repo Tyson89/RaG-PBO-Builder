@@ -86,7 +86,7 @@ Important:
 Never share your .biprivatekey.
 Only distribute the matching .bikey.
 """
-APP_ICON_FILE = os.path.join("assets", "HEADONLY_SQUARE_2k.ico")
+APP_ICON_FILE = os.path.join("assets", "installer.ico")
 
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
