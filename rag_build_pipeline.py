@@ -33,6 +33,7 @@ from rag_preflight import (
     collect_config_cpp_files,
     collect_wrp_files,
     find_worldname_references,
+    find_invalid_p3d_proxy_references,
     format_source_location,
     infer_terrain_pbo_prefix_from_worldname,
     is_path_inside,
@@ -1923,6 +1924,15 @@ def build_all(settings, log, progress_callback):
         log("=" * 80)
         log(f"Preparing addon {index}/{len(targets)}: {folder_name}")
         log("=" * 80)
+        invalid_proxies = find_invalid_p3d_proxy_references(folder_path, project_root, exclude_pattern_list)
+        if invalid_proxies:
+            for issue in invalid_proxies:
+                source = os.path.relpath(issue["source"], folder_path).replace(os.sep, WIN_SEP)
+                if issue["status"] == "excluded":
+                    log(f"ERROR: P3D proxy target is excluded from the packed PBO in {source}: {issue['reference']}")
+                else:
+                    log(f"ERROR: Missing P3D proxy target in {source}: {issue['reference']}")
+            raise BuildError(f"Invalid P3D proxy path(s) found in {folder_name}: {len(invalid_proxies)}. Build aborted.")
         pbo_base_name = get_pbo_base_name(folder_name, pbo_name, len(targets))
         output_pbo = os.path.join(output_addons_dir, pbo_base_name + ".pbo")
         prefix = get_effective_pbo_prefix(pbo_base_name, folder_path, project_root, exclude_pattern_list, log)

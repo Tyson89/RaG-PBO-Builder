@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.8 Beta
+
+- Added dedicated MLOD proxy parsing for paths stored as `proxy:\path\model.001`, resolving them to their actual `.p3d` targets.
+- Missing or excluded MLOD proxy targets now fail preflight instead of being missed by the generic internal P3D reference scanner.
+- Added mandatory build-time MLOD proxy validation so invalid proxy paths abort packing even when Preflight before build and Binarize are disabled.
+
 ## 0.8.7 Beta
 
 - Added a headless Builder CLI with `build` and `preflight` commands, saved-setting defaults, option overrides, JSON output, log files, and automation-friendly exit codes.

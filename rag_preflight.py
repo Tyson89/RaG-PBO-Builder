@@ -47,6 +47,7 @@ P3D_INTERNAL_REFERENCE_REGEX = re.compile(
     rb"([A-Za-z0-9_@#$%&()\-+={}\[\],.;: /\\]+\.(?:paa|rvmat|p3d|wrp|emat|edds|ptc|bisurf|shp|dbf|shx|prj))",
     re.IGNORECASE,
 )
+P3D_PROXY_REFERENCE_REGEX = re.compile(rb"proxy:\\([^\x00\r\n]{1,1024})", re.IGNORECASE)
 PREFLIGHT_TEXT_EXTENSIONS = (".cpp", ".hpp", ".h", ".rvmat", ".cfg", ".c", ".xml", ".json", ".layout", ".imageset")
 RISKY_REFERENCE_EXTENSIONS = {".paa", ".rvmat", ".p3d", ".wss", ".ogg", ".wav", ".emat", ".edds", ".ptc", ".bisurf"}
 SOURCE_TEXTURE_EXTENSIONS = {".png", ".tga", ".psd"}
@@ -182,6 +183,53 @@ def normalize_reference_path(reference):
 
 def normalize_rel_path_key(path_value):
     return normalize_reference_path(path_value).lower()
+
+
+def extract_p3d_proxy_references(data):
+    references = []
+    seen = set()
+    for match in P3D_PROXY_REFERENCE_REGEX.finditer(data):
+        raw = match.group(1).decode("ascii", errors="ignore").strip()
+        reference = re.sub(r"\.\d{3}$", "", raw)
+        if not reference.lower().endswith(".p3d"):
+            reference += ".p3d"
+        reference = normalize_reference_path(reference)
+        key = reference.lower()
+        if reference and key not in seen:
+            references.append(reference)
+            seen.add(key)
+    return references
+
+
+def find_invalid_p3d_proxy_references(addon_source_dir, project_root, extra_patterns=None):
+    issues = []
+    for root, dirs, files in os.walk(addon_source_dir):
+        dirs[:] = [directory for directory in dirs if not should_skip_dir(directory, extra_patterns)]
+        for file in files:
+            if not file.lower().endswith(".p3d") or should_skip_file(file, extra_patterns):
+                continue
+            p3d_file = os.path.join(root, file)
+            try:
+                data = Path(p3d_file).read_bytes()
+            except OSError:
+                continue
+            if data.startswith(b"ODOL"):
+                continue
+            for reference in extract_p3d_proxy_references(data):
+                resolved, status = resolve_reference_path(reference, addon_source_dir, project_root)
+                issue_status = status
+                if status == "ok" and is_path_inside(resolved, addon_source_dir):
+                    relative = os.path.relpath(resolved, addon_source_dir).replace(os.sep, WIN_SEP)
+                    if path_would_be_excluded(relative, extra_patterns):
+                        issue_status = "excluded"
+                if issue_status != "ok":
+                    issues.append({
+                        "source": p3d_file,
+                        "reference": reference,
+                        "resolved": resolved,
+                        "status": issue_status,
+                    })
+    return issues
 
 
 def is_path_inside(child, parent):
@@ -1455,11 +1503,19 @@ def preflight_scan_p3d_internal_references(p3d_file, addon_source_dir, project_r
     seen = set()
     found = 0
 
+    for ref in extract_p3d_proxy_references(data):
+        key = ref.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        found += 1
+        report_reference_status(ref, p3d_file, addon_source_dir, project_root, extra_patterns, result, log, "error", "P3D proxy")
+
     for match in P3D_INTERNAL_REFERENCE_REGEX.finditer(data):
         ref = normalize_reference_path(match.group(1).decode("ascii", errors="ignore").strip())
         key = ref.lower()
 
-        if not ref or key in seen or len(ref) < 5:
+        if not ref or key.startswith("proxy:") or key in seen or len(ref) < 5:
             continue
 
         seen.add(key)
