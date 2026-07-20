@@ -43,6 +43,7 @@ from rag_build_pipeline import (
     get_default_max_processes,
 )
 from rag_builder_common import (
+    BuildCancelled,
     BuildError,
     WIN_SEP,
     parse_exclude_patterns,
@@ -51,9 +52,12 @@ from rag_builder_storage import (
     create_build_log_path,
     get_logs_dir,
     load_build_cache,
+    load_saved_profiles,
     load_saved_settings,
     resource_path,
     save_build_cache,
+    save_json_file,
+    save_saved_profiles,
     save_saved_settings,
 )
 from rag_preflight import run_preflight_for_targets
@@ -93,6 +97,69 @@ APP_ICON_FILE = os.path.join("assets", "installer.ico")
 DEFAULT_TEMP_DIR = str(Path("P:/Temp"))
 DEFAULT_PROJECT_ROOT = "P:"
 DEFAULT_EXCLUDE_PATTERNS = "*.h,*.hpp,*.png,*.cpp,*.txt,thumbs.db,*.dep,*.bak,*.log,*.pew,source,*.tga,*.bat,*.psd,*.cmd,*.mcr,*.fbx,*.max"
+PROFILE_SCHEMA_VERSION = 2
+DEFAULT_PROFILE_NAME = "Default"
+PROFILE_DEFAULT_SETTINGS = {
+    "source_root": "",
+    "output_root": "",
+    "source_root_presets": [],
+    "output_root_presets": [],
+    "pbo_name": "",
+    "use_binarize": True,
+    "convert_config": True,
+    "update_paa_from_sources": False,
+    "sign_pbos": True,
+    "force_rebuild": False,
+    "preflight_before_build": False,
+    "start_server_after_build": False,
+    "project_root": DEFAULT_PROJECT_ROOT,
+    "binarize_addon_folders": "",
+    "exclude_patterns": DEFAULT_EXCLUDE_PATTERNS,
+    "preflight_check_required_addons_hints": True,
+    "preflight_check_texture_freshness": True,
+    "preflight_check_risky_paths": True,
+    "preflight_check_case_conflicts": True,
+    "preflight_check_script_checks": True,
+    "preflight_check_p3d_internal": True,
+    "preflight_check_terrain_cfgworlds": True,
+    "preflight_check_terrain_navmesh": False,
+    "preflight_check_terrain_road_shapes": True,
+    "preflight_check_terrain_structure": True,
+    "preflight_check_terrain_layers": True,
+    "preflight_check_terrain_2d_map": False,
+    "preflight_check_terrain_size": True,
+    "preflight_check_wrp_internal": False,
+    "selected_addons": [],
+}
+PROFILE_VAR_FIELDS = {
+    "source_root": "source_root_var",
+    "output_root": "output_root_var",
+    "pbo_name": "pbo_name_var",
+    "use_binarize": "use_binarize_var",
+    "convert_config": "convert_config_var",
+    "update_paa_from_sources": "update_paa_from_sources_var",
+    "sign_pbos": "sign_pbos_var",
+    "force_rebuild": "force_rebuild_var",
+    "preflight_before_build": "preflight_before_build_var",
+    "start_server_after_build": "start_server_after_build_var",
+    "project_root": "project_root_var",
+    "binarize_addon_folders": "binarize_addon_folders_var",
+    "exclude_patterns": "exclude_patterns_var",
+    "preflight_check_required_addons_hints": "preflight_check_required_addons_hints_var",
+    "preflight_check_texture_freshness": "preflight_check_texture_freshness_var",
+    "preflight_check_risky_paths": "preflight_check_risky_paths_var",
+    "preflight_check_case_conflicts": "preflight_check_case_conflicts_var",
+    "preflight_check_script_checks": "preflight_check_script_checks_var",
+    "preflight_check_p3d_internal": "preflight_check_p3d_internal_var",
+    "preflight_check_terrain_cfgworlds": "preflight_check_terrain_cfgworlds_var",
+    "preflight_check_terrain_navmesh": "preflight_check_terrain_navmesh_var",
+    "preflight_check_terrain_road_shapes": "preflight_check_terrain_road_shapes_var",
+    "preflight_check_terrain_structure": "preflight_check_terrain_structure_var",
+    "preflight_check_terrain_layers": "preflight_check_terrain_layers_var",
+    "preflight_check_terrain_2d_map": "preflight_check_terrain_2d_map_var",
+    "preflight_check_terrain_size": "preflight_check_terrain_size_var",
+    "preflight_check_wrp_internal": "preflight_check_wrp_internal_var",
+}
 
 GRAPHITE_BG = "#24262b"
 GRAPHITE_HEADER = "#1f2126"
@@ -234,19 +301,72 @@ def normalize_path_presets(value):
     return result
 
 
+def normalize_profile_settings(value):
+    value = value if isinstance(value, dict) else {}
+    value = dict(value)
+    if "output_root" not in value and value.get("output_addons"):
+        value["output_root"] = value["output_addons"]
+    if "pbo_name" not in value and value.get("prefix_root"):
+        value["pbo_name"] = value["prefix_root"]
+    settings = {}
+    for key, default in PROFILE_DEFAULT_SETTINGS.items():
+        item = value.get(key, default)
+        if key in {"source_root_presets", "output_root_presets"}:
+            item = normalize_path_presets(item)
+        elif key == "selected_addons":
+            item = list(dict.fromkeys(str(name).strip() for name in item if str(name).strip())) if isinstance(item, list) else []
+        elif isinstance(default, bool):
+            item = bool(item)
+        else:
+            item = str(item).strip()
+        settings[key] = item
+    return settings
+
+
+def normalize_profile_store(value, initial_settings=None):
+    value = value if isinstance(value, dict) else {}
+    profiles = []
+    seen_names = set()
+    for item in value.get("profiles", []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name or name.casefold() in seen_names:
+            continue
+        seen_names.add(name.casefold())
+        profiles.append({
+            "name": name,
+            "protected": name.casefold() == DEFAULT_PROFILE_NAME.casefold(),
+            "settings": normalize_profile_settings(item.get("settings", {})),
+        })
+    if DEFAULT_PROFILE_NAME.casefold() not in seen_names:
+        profiles.insert(0, {
+            "name": DEFAULT_PROFILE_NAME,
+            "protected": True,
+            "settings": normalize_profile_settings(initial_settings or {}),
+        })
+    active_name = str(value.get("active_profile", DEFAULT_PROFILE_NAME)).strip()
+    active = next((item["name"] for item in profiles if item["name"].casefold() == active_name.casefold()), DEFAULT_PROFILE_NAME)
+    return {"schema_version": PROFILE_SCHEMA_VERSION, "active_profile": active, "profiles": profiles}
+
+
 class RaGPboBuilderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.saved_settings = load_saved_settings()
+        self.profile_store = normalize_profile_store(load_saved_profiles(), self.saved_settings)
+        self.active_profile_name = self.profile_store["active_profile"]
+        self._applying_profile = False
         self.title(APP_TITLE)
         self.set_window_icon()
         saved_geometry = self.saved_settings.get("window_geometry", "")
-        self.geometry(saved_geometry if is_safe_window_geometry(saved_geometry) else "1180x900")
-        self.minsize(1120, 830)
+        self.geometry(saved_geometry if is_safe_window_geometry(saved_geometry) else "1280x960")
+        self.minsize(1220, 880)
         self._apply_graphite_theme()
 
         self.log_queue = queue.Queue()
         self.worker_thread = None
+        self.cancel_event = threading.Event()
         self.is_building = False
         self.update_download_in_progress = False
         self.current_log_file = None
@@ -254,9 +374,12 @@ class RaGPboBuilderApp(tk.Tk):
         self.current_addon_targets = []
         self.geometry_save_after_id = None
         self.status_var = tk.StringVar(value="Idle")
+        self.profile_var = tk.StringVar(value=self.active_profile_name)
+        self.profile_state_var = tk.StringVar(value="")
 
         self.source_root_presets = normalize_path_presets(self.saved_settings.get("source_root_presets", []))
         self.output_root_presets = normalize_path_presets(self.saved_settings.get("output_root_presets", []))
+        self.selected_addons_state = list(self.saved_settings.get("selected_addons", []))
         self.source_root_var = tk.StringVar(value=self.saved_settings.get("source_root", ""))
         self.output_root_var = tk.StringVar(value=self.saved_settings.get("output_root", self.saved_settings.get("output_addons", "")))
         self.source_root_preset_var = tk.StringVar(value="")
@@ -268,12 +391,14 @@ class RaGPboBuilderApp(tk.Tk):
         self.sign_pbos_var = tk.BooleanVar(value=self.saved_settings.get("sign_pbos", True))
         self.force_rebuild_var = tk.BooleanVar(value=self.saved_settings.get("force_rebuild", False))
         self.preflight_before_build_var = tk.BooleanVar(value=self.saved_settings.get("preflight_before_build", False))
+        self.start_server_after_build_var = tk.BooleanVar(value=self.saved_settings.get("start_server_after_build", False))
         self.max_processes_var = tk.IntVar(value=self.saved_settings.get("max_processes", get_default_max_processes()))
         self.binarize_exe_var = tk.StringVar(value=self.saved_settings.get("binarize_exe", find_dayz_binarize()))
         self.cfgconvert_exe_var = tk.StringVar(value=self.saved_settings.get("cfgconvert_exe", find_cfgconvert()))
         self.imagetopaa_exe_var = tk.StringVar(value=self.saved_settings.get("imagetopaa_exe", find_imagetopaa()))
         self.dssignfile_exe_var = tk.StringVar(value=self.saved_settings.get("dssignfile_exe", find_dssignfile()))
         self.private_key_var = tk.StringVar(value=self.saved_settings.get("private_key", ""))
+        self.server_launcher_var = tk.StringVar(value=self.saved_settings.get("server_launcher", ""))
         self.project_root_var = tk.StringVar(value=self.saved_settings.get("project_root", DEFAULT_PROJECT_ROOT))
         self.temp_dir_var = tk.StringVar(value=self.saved_settings.get("temp_dir", DEFAULT_TEMP_DIR))
         self.binarize_addon_folders_var = tk.StringVar(value=self.saved_settings.get("binarize_addon_folders", ""))
@@ -300,9 +425,13 @@ class RaGPboBuilderApp(tk.Tk):
         self.log_link_counter = 0
 
         self._build_ui()
+        self._attach_profile_traces()
+        self.update_profile_dropdown()
         self.update_path_preset_dropdowns()
         self.set_status("Idle", "ready")
         self.refresh_addon_list(select_saved=True)
+        self.update_profile_dirty_state()
+        self.save_profile_store()
         self._poll_log_queue()
         self.bind("<Configure>", self.on_window_configure)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -467,6 +596,25 @@ class RaGPboBuilderApp(tk.Tk):
         self.options_button = self._make_header_button(right, "Options", self.open_options_window)
         self.update_check_button = self._make_update_header_button(right, "Check for Update", self.start_update_check)
 
+        profiles = ttk.Frame(outer, style="Card.TFrame", padding=(12, 8))
+        profiles.pack(fill="x", pady=(0, 10))
+        ttk.Label(profiles, text="Profile", style="FieldName.TLabel").pack(side="left", padx=(0, 8))
+        self.profile_combo = ttk.Combobox(profiles, textvariable=self.profile_var, state="readonly", width=25)
+        self.profile_combo.pack(side="left")
+        self.profile_combo.bind("<<ComboboxSelected>>", self.on_profile_selected)
+        add_tooltip(self.profile_combo, "Load complete build configuration. Tool paths, private key, temp folder, worker count, and UI preferences stay global.")
+        ttk.Label(profiles, textvariable=self.profile_state_var, style="FieldMuted.TLabel", width=18).pack(side="left", padx=(8, 10))
+        for text, command in [
+            ("New", self.new_profile),
+            ("Save", self.save_active_profile),
+            ("Save As", self.save_profile_as),
+            ("Rename", self.rename_active_profile),
+            ("Delete", self.delete_active_profile),
+            ("Import", self.import_profile),
+            ("Export", self.export_active_profile),
+        ]:
+            ttk.Button(profiles, text=text, command=command).pack(side="left", padx=(0, 6))
+
         settings = ttk.LabelFrame(outer, text="Build settings", padding=10)
         settings.pack(fill="x", pady=(0, 10))
         self.source_root_preset_combo = self._add_preset_folder_row(settings, 0, "Project Source", self.source_root_var, self.choose_source_root, "Folder containing your addon project. If this folder itself contains config.cpp, it will be built as one addon.", self.open_source_root_folder, self.source_root_preset_var, self.apply_source_root_preset, self.save_source_root_preset, self.delete_source_root_preset, self.get_source_root_preset_tooltip)
@@ -484,14 +632,15 @@ class RaGPboBuilderApp(tk.Tk):
 
         options = ttk.LabelFrame(outer, text="Build options", padding=12)
         options.pack(fill="x", pady=(0, 10))
-        for col, size in [(0, 125), (1, 150), (2, 150), (3, 150)]:
+        for col, size in [(0, 125), (1, 150), (2, 150), (3, 150), (4, 150)]:
             options.columnconfigure(col, minsize=size)
-        options.columnconfigure(4, weight=1)
+        options.columnconfigure(5, weight=1)
         ttk.Label(options, text="Pipeline", style="FieldMuted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         self._add_checkbutton(options, "Binarize", self.use_binarize_var, 0, 1, "Run DayZ Tools binarize.exe before packing addons that contain P3D or WRP files.")
         self._add_checkbutton(options, "CPP to BIN", self.convert_config_var, 0, 2, "Convert root and nested config.cpp files to config.bin in staging before packing.")
         self._add_checkbutton(options, "Sign PBOs", self.sign_pbos_var, 0, 3, "Sign built PBOs with DSSignFile.exe and your .biprivatekey.")
         self._add_checkbutton(options, "Update PAA", self.update_paa_from_sources_var, 0, 4, "Use ImageToPAA.exe to update missing or stale staged .paa files from newer .png/.tga source textures. Source files are not overwritten.")
+        self._add_checkbutton(options, "Start local server", self.start_server_after_build_var, 0, 5, "Start the configured local server launcher only after the full build or preset batch succeeds.")
         ttk.Label(options, text="Safety", style="FieldMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 5), padx=(0, 14))
         self._add_checkbutton(options, "Force rebuild", self.force_rebuild_var, 1, 1, "Ignore the build cache, refresh selected addon temp folders, and rebuild all selected addons.")
         self._add_checkbutton(options, "Preflight before build", self.preflight_before_build_var, 1, 2, "Run syntax and path checks before building. Errors stop the build; warnings only get logged.", columnspan=2)
@@ -529,6 +678,9 @@ class RaGPboBuilderApp(tk.Tk):
         secondary = ttk.Frame(actions)
         secondary.pack(fill="x", pady=(4, 0))
         self.build_button = self._make_action_button(primary, "Build PBOs", self.start_build, primary=True, large=True, tooltip="Build the currently selected addon(s).")
+        self.build_all_button = self._make_action_button(primary, "Build All Presets", self.start_build_all_presets, variant="batch", large=True, tooltip="Build every Project Source preset in the active profile, one after another, using the current Build Output.")
+        self.stop_button = self._make_action_button(primary, "Stop", self.request_build_stop, variant="stop", large=True, tooltip="Request a stop at the next safe build stage. Running external tools and safe output publishing are allowed to finish first.")
+        self.stop_button.configure(state="disabled")
         self.preflight_button = self._make_action_button(primary, "Preflight", self.start_preflight, variant="preflight", large=True, tooltip="Check selected addon(s) before packing.")
         self.status_badge = tk.Label(primary, text="Ready", bg=GRAPHITE_READY, fg="#ffffff", relief="flat", borderwidth=0, padx=10, pady=5, font=("Segoe UI", 9, "bold"))
         self.status_badge.pack(side="left", padx=(14, 6))
@@ -597,6 +749,10 @@ class RaGPboBuilderApp(tk.Tk):
     def _make_action_button(self, parent, text, command, primary=False, tooltip="", variant="", large=False):
         if primary:
             bg, fg, active_bg, hover_bg, weight = GRAPHITE_ACCENT_DARK, "#ffffff", GRAPHITE_ACCENT, GRAPHITE_ACCENT_HOVER, "bold"
+        elif variant == "batch":
+            bg, fg, active_bg, hover_bg, weight = GRAPHITE_SUCCESS_DARK, "#ffffff", GRAPHITE_SUCCESS, GRAPHITE_SUCCESS, "bold"
+        elif variant == "stop":
+            bg, fg, active_bg, hover_bg, weight = GRAPHITE_ERROR_DARK, "#ffffff", GRAPHITE_ACCENT, GRAPHITE_ACCENT_HOVER, "bold"
         elif variant == "preflight":
             bg, fg, active_bg, hover_bg, weight = GRAPHITE_PREFLIGHT, "#ffffff", GRAPHITE_PREFLIGHT_ACTIVE, GRAPHITE_PREFLIGHT_HOVER, "bold"
         else:
@@ -669,9 +825,241 @@ class RaGPboBuilderApp(tk.Tk):
         self.status_var.set(text)
         if not hasattr(self, "status_badge"):
             return
-        states = {"ready": ("Ready", GRAPHITE_READY), "building": ("Building", GRAPHITE_BUILDING), "preflight": ("Preflight", GRAPHITE_PREFLIGHT), "success": ("Done", GRAPHITE_SUCCESS_DARK), "error": ("Error", GRAPHITE_ERROR_DARK)}
+        states = {"ready": ("Ready", GRAPHITE_READY), "building": ("Building", GRAPHITE_BUILDING), "preflight": ("Preflight", GRAPHITE_PREFLIGHT), "success": ("Done", GRAPHITE_SUCCESS_DARK), "stopped": ("Stopped", GRAPHITE_BUILDING), "error": ("Error", GRAPHITE_ERROR_DARK)}
         label, bg = states.get(state, states["ready"])
         self.status_badge.configure(text=label, bg=bg)
+
+    def _attach_profile_traces(self):
+        for attr_name in PROFILE_VAR_FIELDS.values():
+            getattr(self, attr_name).trace_add("write", lambda *_: self.update_profile_dirty_state())
+
+    def get_profile_names(self):
+        return [item["name"] for item in self.profile_store.get("profiles", [])]
+
+    def find_profile(self, name):
+        name_key = str(name).strip().casefold()
+        return next((item for item in self.profile_store.get("profiles", []) if item.get("name", "").casefold() == name_key), None)
+
+    def get_current_profile_settings(self):
+        settings = {}
+        for key, attr_name in PROFILE_VAR_FIELDS.items():
+            settings[key] = getattr(self, attr_name).get()
+        settings["source_root_presets"] = normalize_path_presets(self.source_root_presets)
+        settings["output_root_presets"] = normalize_path_presets(self.output_root_presets)
+        settings["selected_addons"] = self.selected_addons_state
+        return normalize_profile_settings(settings)
+
+    def update_profile_dirty_state(self):
+        if self._applying_profile or not hasattr(self, "profile_state_var"):
+            return
+        profile = self.find_profile(self.active_profile_name)
+        dirty = not profile or self.get_current_profile_settings() != normalize_profile_settings(profile.get("settings", {}))
+        self.profile_state_var.set("Unsaved changes" if dirty else "Saved")
+
+    def update_profile_dropdown(self):
+        names = self.get_profile_names()
+        if hasattr(self, "profile_combo"):
+            self.profile_combo.configure(values=names)
+        self.profile_var.set(self.active_profile_name if self.active_profile_name in names else DEFAULT_PROFILE_NAME)
+
+    def save_profile_store(self):
+        self.profile_store["schema_version"] = PROFILE_SCHEMA_VERSION
+        self.profile_store["active_profile"] = self.active_profile_name
+        save_saved_profiles(self.profile_store)
+
+    def profile_changes_allowed(self):
+        if not self.is_building:
+            return True
+        messagebox.showwarning(APP_TITLE, "Profiles cannot be changed while a build or preflight is running.")
+        self.profile_var.set(self.active_profile_name)
+        return False
+
+    def confirm_profile_switch(self):
+        profile = self.find_profile(self.active_profile_name)
+        if not profile or self.get_current_profile_settings() == normalize_profile_settings(profile.get("settings", {})):
+            return True
+        result = messagebox.askyesnocancel(APP_TITLE, f"Save changes to profile '{self.active_profile_name}' before switching?")
+        if result is None:
+            return False
+        if result:
+            self.save_active_profile()
+        return True
+
+    def apply_profile(self, profile, confirm_switch=True):
+        if not profile or not self.profile_changes_allowed():
+            return False
+        if confirm_switch and not self.confirm_profile_switch():
+            self.profile_var.set(self.active_profile_name)
+            return False
+        settings = normalize_profile_settings(profile.get("settings", {}))
+        self._applying_profile = True
+        try:
+            self.source_root_presets = settings["source_root_presets"]
+            self.output_root_presets = settings["output_root_presets"]
+            for key, attr_name in PROFILE_VAR_FIELDS.items():
+                getattr(self, attr_name).set(settings[key])
+            self.selected_addons_state = settings["selected_addons"]
+            self.saved_settings["selected_addons"] = settings["selected_addons"]
+            self.active_profile_name = profile["name"]
+            self.profile_var.set(profile["name"])
+            self.update_path_preset_dropdowns()
+            self.addon_listbox.selection_clear(0, "end")
+            self.refresh_addon_list(select_saved=True)
+        finally:
+            self._applying_profile = False
+        self.save_profile_store()
+        self.save_path_settings()
+        self.update_profile_dirty_state()
+        self.log(f"Loaded profile: {profile['name']}")
+        return True
+
+    def on_profile_selected(self, event=None):
+        profile = self.find_profile(self.profile_var.get())
+        if not profile or profile["name"] == self.active_profile_name:
+            self.profile_var.set(self.active_profile_name)
+            return
+        self.apply_profile(profile)
+
+    def get_new_profile_name(self, prompt, initialvalue=""):
+        name = simpledialog.askstring(APP_TITLE, prompt, initialvalue=initialvalue, parent=self)
+        if name is None:
+            return ""
+        name = name.strip()
+        if not name:
+            messagebox.showerror(APP_TITLE, "Profile name cannot be empty.")
+            return ""
+        return name
+
+    def new_profile(self):
+        if not self.profile_changes_allowed() or not self.confirm_profile_switch():
+            return
+        name = self.get_new_profile_name("New profile name:")
+        if not name:
+            return
+        if self.find_profile(name):
+            messagebox.showerror(APP_TITLE, f"Profile '{name}' already exists.")
+            return
+        profile = {"name": name, "protected": False, "settings": normalize_profile_settings({})}
+        self.profile_store["profiles"].append(profile)
+        self.update_profile_dropdown()
+        self.apply_profile(profile, confirm_switch=False)
+
+    def save_active_profile(self):
+        if not self.profile_changes_allowed():
+            return
+        profile = self.find_profile(self.active_profile_name)
+        if not profile:
+            return
+        profile["settings"] = self.get_current_profile_settings()
+        self.save_profile_store()
+        self.update_profile_dirty_state()
+        self.log(f"Saved profile: {profile['name']}")
+
+    def save_profile_as(self):
+        if not self.profile_changes_allowed():
+            return
+        name = self.get_new_profile_name("Save current configuration as profile:", f"{self.active_profile_name} Copy")
+        if not name:
+            return
+        if self.find_profile(name):
+            messagebox.showerror(APP_TITLE, f"Profile '{name}' already exists.")
+            return
+        profile = {"name": name, "protected": False, "settings": self.get_current_profile_settings()}
+        self.profile_store["profiles"].append(profile)
+        self.active_profile_name = name
+        self.update_profile_dropdown()
+        self.save_profile_store()
+        self.update_profile_dirty_state()
+        self.log(f"Saved profile as: {name}")
+
+    def rename_active_profile(self):
+        if not self.profile_changes_allowed():
+            return
+        profile = self.find_profile(self.active_profile_name)
+        if not profile or profile.get("protected"):
+            messagebox.showinfo(APP_TITLE, "Default profile cannot be renamed.")
+            return
+        name = self.get_new_profile_name("Rename profile:", profile["name"])
+        if not name or name == profile["name"]:
+            return
+        existing = self.find_profile(name)
+        if existing and existing is not profile:
+            messagebox.showerror(APP_TITLE, f"Profile '{name}' already exists.")
+            return
+        old_name = profile["name"]
+        profile["name"] = name
+        self.active_profile_name = name
+        self.update_profile_dropdown()
+        self.save_profile_store()
+        self.log(f"Renamed profile: {old_name} -> {name}")
+
+    def delete_active_profile(self):
+        if not self.profile_changes_allowed():
+            return
+        profile = self.find_profile(self.active_profile_name)
+        if not profile or profile.get("protected"):
+            messagebox.showinfo(APP_TITLE, "Default profile cannot be deleted.")
+            return
+        if not messagebox.askyesno(APP_TITLE, f"Delete profile '{profile['name']}'? Unsaved changes will be lost."):
+            return
+        name = profile["name"]
+        self.profile_store["profiles"].remove(profile)
+        default_profile = self.find_profile(DEFAULT_PROFILE_NAME)
+        self.apply_profile(default_profile, confirm_switch=False)
+        self.update_profile_dropdown()
+        self.log(f"Deleted profile: {name}")
+
+    def import_profile(self):
+        if not self.profile_changes_allowed():
+            return
+        path = filedialog.askopenfilename(title="Import profile", filetypes=[("RaG profile", "*.json"), ("JSON", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            if not isinstance(data, dict) or not isinstance(data.get("profile"), dict):
+                raise ValueError("File does not contain a RaG PBO Builder profile.")
+            if int(data.get("schema_version", 0)) > PROFILE_SCHEMA_VERSION:
+                raise ValueError("Profile uses a newer unsupported schema version.")
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Could not import profile:\n\n{e}")
+            return
+        imported = data["profile"]
+        name = self.get_new_profile_name("Imported profile name:", str(imported.get("name", "Imported Profile")).strip())
+        if not name:
+            return
+        existing = self.find_profile(name)
+        if existing and existing.get("protected"):
+            messagebox.showerror(APP_TITLE, "Default profile cannot be replaced by an import.")
+            return
+        if existing and not messagebox.askyesno(APP_TITLE, f"Replace existing profile '{existing['name']}'?"):
+            return
+        if not self.confirm_profile_switch():
+            return
+        profile = {"name": name, "protected": False, "settings": normalize_profile_settings(imported.get("settings", {}))}
+        if existing:
+            index = self.profile_store["profiles"].index(existing)
+            self.profile_store["profiles"][index] = profile
+        else:
+            self.profile_store["profiles"].append(profile)
+        self.update_profile_dropdown()
+        self.apply_profile(profile, confirm_switch=False)
+        self.log(f"Imported profile: {name}")
+
+    def export_active_profile(self):
+        profile = self.find_profile(self.active_profile_name)
+        if not profile:
+            return
+        path = filedialog.asksaveasfilename(title="Export profile", defaultextension=".json", initialfile=f"{profile['name']}.profile.json", filetypes=[("RaG profile", "*.json"), ("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            save_json_file(Path(path), {"schema_version": PROFILE_SCHEMA_VERSION, "profile": {"name": profile["name"], "settings": normalize_profile_settings(profile.get("settings", {}))}})
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Could not export profile:\n\n{e}")
+            return
+        self.log(f"Exported profile: {profile['name']} -> {path}")
 
     def get_path_preset_names(self, presets):
         return [item["name"] for item in normalize_path_presets(presets) if item.get("name")]
@@ -916,6 +1304,19 @@ class RaGPboBuilderApp(tk.Tk):
         exclude_entry.insert("1.0", self.exclude_patterns_var.get())
         frame.rowconfigure(9, weight=1)
 
+        post_build_frame = ttk.LabelFrame(container, text="Post-build", padding=14)
+        post_build_frame.pack(fill="x", pady=(12, 0))
+        post_build_frame.columnconfigure(1, weight=1)
+        self._add_file_row(
+            post_build_frame,
+            0,
+            "Server launcher",
+            self.server_launcher_var,
+            self.choose_server_launcher,
+            "Local .bat, .cmd, or .exe launcher. Starts in its own folder with a new console after successful builds.",
+        )
+        ttk.Label(post_build_frame, text="Enable Start local server from main window Build options.", foreground=GRAPHITE_MUTED).grid(row=1, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(0, 4))
+
         preflight_frame = ttk.LabelFrame(container, text="Preflight checks", padding=14)
         preflight_frame.pack(fill="x", pady=(12, 0))
         for col, size in [(0, 175), (1, 175), (2, 175)]:
@@ -1061,7 +1462,7 @@ class RaGPboBuilderApp(tk.Tk):
         output_root = self.output_root_var.get().strip()
         output_addons_dir = os.path.join(output_root, "Addons") if output_root else ""
         previous = set(self.get_selected_addon_names()) if hasattr(self, "addon_listbox") else set()
-        saved = set(self.saved_settings.get("selected_addons", [])) if select_saved else set()
+        saved = set(self.selected_addons_state) if select_saved else set()
         self.addon_listbox.delete(0, "end")
         self.current_addon_targets = []
         if not source_root or not os.path.isdir(source_root):
@@ -1084,6 +1485,7 @@ class RaGPboBuilderApp(tk.Tk):
         for index, name in enumerate(names):
             if name in selection:
                 self.addon_listbox.selection_set(index)
+        self.selected_addons_state = self.get_selected_addon_names()
         self.update_path_preset_dropdowns()
         self.save_path_settings()
 
@@ -1096,6 +1498,8 @@ class RaGPboBuilderApp(tk.Tk):
         self.save_path_settings()
 
     def save_path_settings(self):
+        if hasattr(self, "addon_listbox") and os.path.isdir(self.source_root_var.get().strip()):
+            self.selected_addons_state = self.get_selected_addon_names()
         try:
             max_processes = int(self.max_processes_var.get())
         except Exception:
@@ -1112,12 +1516,14 @@ class RaGPboBuilderApp(tk.Tk):
             "sign_pbos": bool(self.sign_pbos_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
+            "start_server_after_build": bool(self.start_server_after_build_var.get()),
             "max_processes": max_processes,
             "binarize_exe": self.binarize_exe_var.get().strip(),
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
             "imagetopaa_exe": self.imagetopaa_exe_var.get().strip(),
             "dssignfile_exe": self.dssignfile_exe_var.get().strip(),
             "private_key": self.private_key_var.get().strip(),
+            "server_launcher": self.server_launcher_var.get().strip(),
             "project_root": self.project_root_var.get().strip(),
             "temp_dir": self.temp_dir_var.get().strip(),
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
@@ -1137,11 +1543,12 @@ class RaGPboBuilderApp(tk.Tk):
             "preflight_check_terrain_2d_map": bool(self.preflight_check_terrain_2d_map_var.get()) if hasattr(self, "preflight_check_terrain_2d_map_var") else False,
             "preflight_check_terrain_size": bool(self.preflight_check_terrain_size_var.get()) if hasattr(self, "preflight_check_terrain_size_var") else True,
             "preflight_check_wrp_internal": bool(self.preflight_check_wrp_internal_var.get()) if hasattr(self, "preflight_check_wrp_internal_var") else False,
-            "selected_addons": self.get_selected_addon_names() if hasattr(self, "addon_listbox") else [],
+            "selected_addons": self.selected_addons_state,
             "window_geometry": self.geometry() if is_safe_window_geometry(self.geometry()) else self.saved_settings.get("window_geometry", ""),
         }
         self.saved_settings = data
         save_saved_settings(data)
+        self.update_profile_dirty_state()
 
     def choose_source_root(self):
         path = filedialog.askdirectory(title="Select Project Source", initialdir=get_initial_dir_from_value(self.source_root_var.get(), self.output_root_var.get()))
@@ -1199,6 +1606,12 @@ class RaGPboBuilderApp(tk.Tk):
         path = filedialog.askopenfilename(title="Select private key", initialdir=get_initial_dir_from_value(self.private_key_var.get(), self.output_root_var.get()), filetypes=[("BI private key", "*.biprivatekey"), ("All files", "*.*")])
         if path:
             self.private_key_var.set(path)
+            self.save_path_settings()
+
+    def choose_server_launcher(self):
+        path = filedialog.askopenfilename(title="Select local server launcher", initialdir=get_initial_dir_from_value(self.server_launcher_var.get(), self.output_root_var.get()), filetypes=[("Server launchers", ("*.bat", "*.cmd", "*.exe")), ("Batch files", ("*.bat", "*.cmd")), ("Executable", "*.exe"), ("All files", "*.*")])
+        if path:
+            self.server_launcher_var.set(path)
             self.save_path_settings()
 
     def validate_preflight_settings(self):
@@ -1283,6 +1696,14 @@ class RaGPboBuilderApp(tk.Tk):
                 raise BuildError("Select a .biprivatekey file or disable Sign PBOs.")
             if not os.path.isfile(key):
                 raise BuildError(f"Private key does not exist: {key}")
+        if self.start_server_after_build_var.get():
+            launcher = self.server_launcher_var.get().strip()
+            if not launcher:
+                raise BuildError("Select a local server launcher or disable Start local server.")
+            if not os.path.isfile(launcher):
+                raise BuildError(f"Local server launcher does not exist: {launcher}")
+            if Path(launcher).suffix.lower() not in {".bat", ".cmd", ".exe"}:
+                raise BuildError("Local server launcher must be a .bat, .cmd, or .exe file.")
         try:
             max_processes = int(self.max_processes_var.get())
         except Exception:
@@ -1298,11 +1719,13 @@ class RaGPboBuilderApp(tk.Tk):
             "sign_pbos": bool(self.sign_pbos_var.get()),
             "force_rebuild": bool(self.force_rebuild_var.get()),
             "preflight_before_build": bool(self.preflight_before_build_var.get()),
+            "start_server_after_build": bool(self.start_server_after_build_var.get()),
             "binarize_exe": self.binarize_exe_var.get().strip(),
             "cfgconvert_exe": self.cfgconvert_exe_var.get().strip(),
             "imagetopaa_exe": self.imagetopaa_exe_var.get().strip(),
             "dssignfile_exe": self.dssignfile_exe_var.get().strip(),
             "private_key": self.private_key_var.get().strip(),
+            "server_launcher": self.server_launcher_var.get().strip(),
             "project_root": self.project_root_var.get().strip() or DEFAULT_PROJECT_ROOT,
             "temp_dir": self.temp_dir_var.get().strip() or DEFAULT_TEMP_DIR,
             "binarize_addon_folders": self.binarize_addon_folders_var.get().strip(),
@@ -1328,6 +1751,49 @@ class RaGPboBuilderApp(tk.Tk):
         self.save_path_settings()
         return settings
 
+    def launch_local_server(self, build_result):
+        if not build_result.get("start_server_after_build"):
+            return False, ""
+        launcher = str(build_result.get("server_launcher", "")).strip()
+        if not launcher:
+            error = "Select a local server launcher under Options > Post-build."
+            self.log(f"ERROR: {error}")
+            return False, error
+        if not os.path.isfile(launcher):
+            error = f"Local server launcher does not exist: {launcher}"
+            self.log(f"ERROR: {error}")
+            return False, error
+        suffix = Path(launcher).suffix.lower()
+        try:
+            if suffix in {".bat", ".cmd"}:
+                if os.name != "nt":
+                    raise OSError("Batch server launchers are supported on Windows only.")
+                command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", launcher]
+            elif suffix == ".exe":
+                command = [launcher]
+            else:
+                raise OSError("Local server launcher must be a .bat, .cmd, or .exe file.")
+            process_options = {"cwd": os.path.dirname(launcher) or None}
+            if os.name == "nt":
+                process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            else:
+                process_options["start_new_session"] = True
+            subprocess.Popen(command, **process_options)
+            self.log(f"Started local server launcher: {launcher}")
+            return True, ""
+        except Exception as e:
+            error = f"Could not start local server launcher: {e}"
+            self.log(f"ERROR: {error}")
+            return False, error
+
+    def request_build_stop(self):
+        if not self.is_building or self.cancel_event.is_set():
+            return
+        self.cancel_event.set()
+        self.stop_button.configure(state="disabled")
+        self.set_status("Stopping at next safe point...", "building")
+        self.log("WARNING: Stop requested. Waiting for current safe build stage to finish.")
+
     def start_preflight(self):
         if self.is_building:
             return
@@ -1341,8 +1807,11 @@ class RaGPboBuilderApp(tk.Tk):
         Path(self.current_log_path).parent.mkdir(parents=True, exist_ok=True)
         self.current_log_file = open(self.current_log_path, "w", encoding="utf-8")
         self.reset_run_counters("Preflight running...")
+        self.cancel_event.clear()
         self.is_building = True
         self.build_button.configure(state="disabled")
+        self.build_all_button.configure(state="disabled")
+        self.stop_button.configure(state="disabled")
         self.preflight_button.configure(state="disabled")
         self.progress.configure(value=0, maximum=100)
         self.set_status("Preflight running...", "preflight")
@@ -1370,8 +1839,11 @@ class RaGPboBuilderApp(tk.Tk):
         Path(self.current_log_path).parent.mkdir(parents=True, exist_ok=True)
         self.current_log_file = open(self.current_log_path, "w", encoding="utf-8")
         self.reset_run_counters("Build running...")
+        self.cancel_event.clear()
         self.is_building = True
         self.build_button.configure(state="disabled")
+        self.build_all_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
         self.preflight_button.configure(state="disabled")
         self.progress.configure(value=0, maximum=100)
         self.set_status("Build running...", "building")
@@ -1382,10 +1854,124 @@ class RaGPboBuilderApp(tk.Tk):
 
     def _build_worker(self, settings):
         try:
-            summary = build_all(settings, self.thread_log, self.thread_progress)
+            summary = build_all(settings, self.thread_log, self.thread_progress, self.cancel_event.is_set)
+            summary["start_server_after_build"] = bool(settings.get("start_server_after_build", False))
+            summary["server_launcher"] = settings.get("server_launcher", "")
             self.log_queue.put(("done", summary))
+        except BuildCancelled as e:
+            self.log_queue.put(("cancelled", str(e)))
         except Exception as e:
             self.log_queue.put(("error", str(e)))
+
+    def start_build_all_presets(self):
+        if self.is_building:
+            return
+        presets = normalize_path_presets(self.source_root_presets)
+        if not presets:
+            messagebox.showerror(APP_TITLE, "Active profile has no Project Source presets.")
+            return
+
+        original_source = self.source_root_var.get()
+        original_pbo_name = self.pbo_name_var.get()
+        original_selection = list(self.selected_addons_state)
+        original_preset_name = self.source_root_preset_var.get()
+        prepared = []
+        validation_error = None
+        preset = None
+        try:
+            self.pbo_name_var.set("")
+            for preset in presets:
+                self.source_root_var.set(preset["path"])
+                self.selected_addons_state = []
+                self.saved_settings["selected_addons"] = []
+                self.addon_listbox.selection_clear(0, "end")
+                self.refresh_addon_list(select_all_default=True)
+                settings = self.validate_settings()
+                prepared.append((preset["name"], settings))
+        except Exception as e:
+            validation_error = f"Preset '{preset['name']}': {e}" if preset else str(e)
+        finally:
+            self.source_root_var.set(original_source)
+            self.pbo_name_var.set(original_pbo_name)
+            self.selected_addons_state = original_selection
+            self.saved_settings["selected_addons"] = original_selection
+            self.addon_listbox.selection_clear(0, "end")
+            self.refresh_addon_list(select_saved=True)
+            self.source_root_preset_var.set(original_preset_name)
+            self.save_path_settings()
+        if validation_error:
+            messagebox.showerror(APP_TITLE, validation_error)
+            return
+
+        base_log_path = Path(create_build_log_path())
+        self.current_log_path = str(base_log_path.with_name(base_log_path.stem + "_batch.log"))
+        for index, (name, settings) in enumerate(prepared, start=1):
+            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "preset"
+            settings["log_file"] = str(base_log_path.with_name(f"{base_log_path.stem}_{index:02d}_{safe_name}.log"))
+        Path(self.current_log_path).parent.mkdir(parents=True, exist_ok=True)
+        self.current_log_file = open(self.current_log_path, "w", encoding="utf-8")
+        self.reset_run_counters("Batch build running...")
+        self.cancel_event.clear()
+        self.is_building = True
+        self.build_button.configure(state="disabled")
+        self.build_all_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.preflight_button.configure(state="disabled")
+        self.progress.configure(value=0, maximum=len(prepared))
+        self.set_status("Batch build running...", "building")
+        self.log(f"Starting batch build: {len(prepared)} preset(s) from profile '{self.active_profile_name}'.")
+        self.log(f"Build Output: {self.output_root_var.get().strip()}")
+        self.log(f"Batch log file: {self.current_log_path}")
+        if original_pbo_name.strip():
+            self.log("WARNING: PBO Name override is ignored during batch builds. Addon folder names will be used.")
+        self.worker_thread = threading.Thread(target=self._batch_build_worker, args=(prepared,), daemon=True)
+        self.worker_thread.start()
+
+    def _batch_build_worker(self, prepared):
+        totals = {"built": 0, "skipped": 0, "signed": 0, "failed": 0, "targets": 0}
+        errors = []
+        total_presets = len(prepared)
+        for index, (name, settings) in enumerate(prepared, start=1):
+            if self.cancel_event.is_set():
+                self.log_queue.put(("cancelled", f"Batch build stopped after {index - 1} of {total_presets} presets."))
+                return
+            self.log_queue.put(("batch_preset", (index, total_presets, name)))
+            log_path = settings["log_file"]
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "w", encoding="utf-8") as preset_log_file:
+                def preset_log(message):
+                    line = str(message)
+                    preset_log_file.write(line + chr(10))
+                    preset_log_file.flush()
+                    self.thread_log(line)
+
+                preset_log("")
+                preset_log("=" * 80)
+                preset_log(f"BATCH PRESET {index}/{total_presets}: {name}")
+                preset_log("=" * 80)
+                try:
+                    summary = build_all(settings, preset_log, lambda current, total: None, self.cancel_event.is_set)
+                    for key in totals:
+                        totals[key] += int(summary.get(key, 0))
+                except BuildCancelled:
+                    preset_log("WARNING: Batch build stopped by user at a safe point.")
+                    self.log_queue.put(("cancelled", f"Batch build stopped during preset {index} of {total_presets}: {name}"))
+                    return
+                except Exception as e:
+                    error = f"{name}: {e}"
+                    errors.append(error)
+                    totals["failed"] += 1
+                    preset_log(f"ERROR: Preset build failed: {error}")
+                self.log_queue.put(("batch_progress", (index, total_presets)))
+        post_build_settings = prepared[0][1] if prepared else {}
+        self.log_queue.put(("batch_done", {
+            "presets": total_presets,
+            "succeeded": total_presets - len(errors),
+            "errors": errors,
+            "totals": totals,
+            "start_server_after_build": bool(post_build_settings.get("start_server_after_build", False)),
+            "server_launcher": post_build_settings.get("server_launcher", ""),
+        }))
 
     def thread_log(self, message):
         self.log_queue.put(("log", message))
@@ -1537,17 +2123,66 @@ class RaGPboBuilderApp(tk.Tk):
                     maximum = max(total, 1)
                     self.progress.configure(maximum=maximum, value=current)
                     self.set_status(f"Working... {current}/{maximum}", "building")
+                elif item_type == "batch_preset":
+                    current, total, name = payload
+                    self.progress.configure(maximum=max(total, 1), value=current - 1)
+                    self.set_status(f"Preset {current}/{total}: {name}", "building")
+                elif item_type == "batch_progress":
+                    current, total = payload
+                    self.progress.configure(maximum=max(total, 1), value=current)
+                elif item_type == "cancelled":
+                    self.is_building = False
+                    self.build_button.configure(state="normal")
+                    self.build_all_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
+                    self.preflight_button.configure(state="normal")
+                    self.log(f"WARNING: {payload}")
+                    self.set_status("Build stopped", "stopped")
+                    self.close_current_log_file()
+                    messagebox.showinfo(APP_TITLE, payload)
+                elif item_type == "batch_done":
+                    self.is_building = False
+                    self.build_button.configure(state="normal")
+                    self.build_all_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
+                    self.preflight_button.configure(state="normal")
+                    self.progress.configure(value=self.progress.cget("maximum"))
+                    totals = payload["totals"]
+                    message = f"Batch build finished.\n\nPresets: {payload['succeeded']}/{payload['presets']} succeeded\nBuilt: {totals['built']}\nSkipped: {totals['skipped']}"
+                    if payload["errors"]:
+                        self.close_current_log_file()
+                        self.set_status("Batch finished with errors", "error")
+                        message += "\n\nFailed:\n" + "\n".join(payload["errors"])
+                        messagebox.showwarning(APP_TITLE, message)
+                    else:
+                        launched, launch_error = self.launch_local_server(payload)
+                        self.close_current_log_file()
+                        if launch_error:
+                            self.set_status("Build done; server failed", "error")
+                            messagebox.showwarning(APP_TITLE, message + "\n\n" + launch_error)
+                        else:
+                            self.set_status("Batch build finished", "success")
+                            messagebox.showinfo(APP_TITLE, message + ("\n\nLocal server launcher started." if launched else ""))
                 elif item_type == "done":
                     self.is_building = False
                     self.build_button.configure(state="normal")
+                    self.build_all_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
                     self.preflight_button.configure(state="normal")
                     self.progress.configure(value=self.progress.cget("maximum"))
-                    self.set_status("Build finished", "success")
+                    launched, launch_error = self.launch_local_server(payload)
                     self.close_current_log_file()
-                    messagebox.showinfo(APP_TITLE, "Build finished.")
+                    if launch_error:
+                        self.set_status("Build done; server failed", "error")
+                        messagebox.showwarning(APP_TITLE, "Build finished, but server did not start.\n\n" + launch_error)
+                    else:
+                        self.set_status("Build finished", "success")
+                        messagebox.showinfo(APP_TITLE, "Build finished." + ("\n\nLocal server launcher started." if launched else ""))
                 elif item_type == "preflight_done":
                     self.is_building = False
                     self.build_button.configure(state="normal")
+                    self.build_all_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
                     self.preflight_button.configure(state="normal")
                     self.progress.configure(value=self.progress.cget("maximum"))
                     self.set_status("Preflight finished", "success")
@@ -1562,6 +2197,8 @@ class RaGPboBuilderApp(tk.Tk):
                 elif item_type == "error":
                     self.is_building = False
                     self.build_button.configure(state="normal")
+                    self.build_all_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
                     self.preflight_button.configure(state="normal")
                     self.log("")
                     self.log(f"ERROR: {payload}")

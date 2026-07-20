@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.9 Beta
+
+- Added named build profiles containing build settings, path presets, addon selections, and preflight options, with import and export support.
+- Added `Build All Presets` to build every Project Source preset in the active profile sequentially.
+- Added safe-point build cancellation through the `Stop` button.
+- Added optional post-build launch of a configured local `.bat`, `.cmd`, or `.exe` server launcher after successful single or batch builds.
+- Fixed batch launcher execution for Windows paths containing spaces and parentheses.
+- Increased the default and minimum window sizes so all main controls remain visible.
+
 ## 0.8.8 Beta
 
 - Added dedicated MLOD proxy parsing for paths stored as `proxy:\path\model.001`, resolving them to their actual `.p3d` targets.

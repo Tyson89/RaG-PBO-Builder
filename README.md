@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.8.8 Beta
+**Version:** 0.8.9 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -41,6 +41,10 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Save and restore the window size and position
 - Save named presets for Project Source and Build Output
 - Load Project Source and Build Output presets independently for faster project switching
+- Save complete build profiles containing settings, path presets, and addon selections
+- Build every Project Source preset in the active profile sequentially
+- Stop active builds at the next safe pipeline point
+- Start a configured local `.bat`, `.cmd`, or `.exe` server launcher after a successful build or preset batch
 - Use a log severity filter to hide `INFO` lines or show only warnings/errors
 - Check GitHub releases from the Builder window, download a SHA-256 verified installer, and launch the update
 - Auto-detect DayZ Tools from Steam library folders, including non-C-drive Steam libraries
@@ -112,6 +116,18 @@ Preset behavior:
 - Presets do not change signing, Binarize, CfgConvert, temp, exclude, private key, or preflight settings
 
 This keeps path switching convenient without accidentally changing important build settings.
+
+---
+
+## Profiles and Batch Builds
+
+Profiles save build settings, Project Source and Build Output presets, selected addons, and preflight options. Profiles can be created, renamed, deleted, imported, and exported. Tool paths, signing keys, temp paths, worker count, and the server launcher path remain global.
+
+`Build All Presets` builds every Project Source preset in the active profile, one after another, using the current Build Output. It does not build presets from other profiles. The original source and addon selection are restored afterward.
+
+`Stop` requests cancellation at the next safe pipeline point. Running external tools and atomic output publishing finish before the build stops.
+
+To start a local server after success, select a `.bat`, `.cmd`, or `.exe` launcher under `Options > Post-build`, then enable `Start local server` under Pipeline. A preset batch starts the launcher once, only when every preset succeeds.
 
 ---
 
@@ -611,13 +627,14 @@ The interface includes:
 
 - Modern graphite-style UI
 - Project Source and Build Output path fields
+- Build profile controls with import and export
 - Independent named path presets
 - Grouped build options:
   - Pipeline
   - Safety
   - Performance
 - Binarize workers setting
-- Larger main action buttons for `Build PBOs` and `Preflight`
+- Main actions for `Build PBOs`, `Build All Presets`, `Stop`, and `Preflight`
 - `Options` button in the top-right header
 - `Open` buttons next to Project Source and Build Output
 - Clear build/log/cache/temp controls
@@ -707,6 +724,10 @@ The script checks that the working tree is clean, builds the local installer pac
 Optional:
 
 - Save Project Source and Build Output presets for faster switching
+- Save settings and presets in named profiles
+- Use `Build All Presets` to build every Project Source preset in the active profile
+- Use `Stop` to cancel at the next safe build point
+- Enable `Start local server` after configuring a launcher under `Options > Post-build`
 - Use `Preflight` to check configs and referenced paths before building
 - Enable `Preflight before build` if you want checks to run automatically
 - Use the log filter to focus on warnings or errors

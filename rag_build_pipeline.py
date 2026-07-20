@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pbo_core import PboError, read_pbo_archive
 from rag_builder_common import (
+    BuildCancelled,
     BuildError,
     COPY_CHUNK_SIZE,
     WIN_SEP,
@@ -1815,7 +1816,7 @@ def update_staging_paa_from_source_textures(source_dir, staging_dir, imagetopaa_
     return converted
 
 
-def build_all(settings, log, progress_callback):
+def build_all(settings, log, progress_callback, cancel_callback=None):
     start = time.time()
     original_log = log
     diagnostic_log_lines = []
@@ -1828,6 +1829,15 @@ def build_all(settings, log, progress_callback):
         original_log(message)
 
     log = capture_log
+
+    def check_cancelled(pending_jobs=None):
+        if not cancel_callback or not cancel_callback():
+            return
+        for pending_job in pending_jobs or []:
+            cleanup_output_work_dir(pending_job.get("output_work_dir", ""), log)
+        raise BuildCancelled("Build stopped by user.")
+
+    check_cancelled()
     source_root = os.path.normpath(settings["source_root"])
     output_root = os.path.normpath(settings["output_root_dir"])
     output_addons_dir = os.path.join(output_root, "Addons")
@@ -1838,6 +1848,7 @@ def build_all(settings, log, progress_callback):
     os.makedirs(output_addons_dir, exist_ok=True)
     os.makedirs(output_keys_dir, exist_ok=True)
     ensure_builder_temp_root(temp_root, log, source_root, output_root)
+    check_cancelled()
 
     use_binarize = settings["use_binarize"]
     convert_config = settings["convert_config"]
@@ -1895,6 +1906,7 @@ def build_all(settings, log, progress_callback):
         log(f"Using DSSignFile.exe: {dssignfile_exe}")
         log(f"Using private key: {os.path.basename(private_key)}")
 
+    check_cancelled()
     all_targets = detect_addon_targets(source_root, output_addons_dir, exclude_pattern_list)
     targets = [(name, path) for name, path in all_targets if name in selected_addons] if selected_addons else []
     if not targets:
@@ -1902,8 +1914,10 @@ def build_all(settings, log, progress_callback):
     log(f"Found {len(all_targets)} addon target(s). Selected {len(targets)} for build.")
 
     if preflight_before_build:
+        check_cancelled()
         log("Preflight before build enabled. Running checks before packing.")
         preflight = run_preflight_for_targets(settings, targets, log, progress_callback)
+        check_cancelled()
         if preflight.errors > 0:
             raise BuildError(f"Preflight failed with {preflight.errors} error(s). Build aborted.")
         log(f"Preflight completed with {preflight.warnings} warning(s). Continuing build." if preflight.warnings else "Preflight completed without errors or warnings. Continuing build.")
@@ -1919,12 +1933,14 @@ def build_all(settings, log, progress_callback):
         log("Force rebuild enabled. Cache will be ignored for selected addons.")
 
     for index, (folder_name, folder_path) in enumerate(targets, start=1):
+        check_cancelled(jobs)
         progress_callback(index - 1, len(targets))
         log("")
         log("=" * 80)
         log(f"Preparing addon {index}/{len(targets)}: {folder_name}")
         log("=" * 80)
         invalid_proxies = find_invalid_p3d_proxy_references(folder_path, project_root, exclude_pattern_list)
+        check_cancelled(jobs)
         if invalid_proxies:
             for issue in invalid_proxies:
                 source = os.path.relpath(issue["source"], folder_path).replace(os.sep, WIN_SEP)
@@ -1961,6 +1977,7 @@ def build_all(settings, log, progress_callback):
             staging_dir = os.path.join(addon_temp_root, "staging")
             log("Copying source to staging folder...")
             copy_source_to_staging(folder_path, staging_dir, exclude_pattern_list, log, True, folder_needs_binarize)
+            check_cancelled(jobs)
             pack_source = staging_dir
         if folder_needs_binarize:
             binarized_dir = os.path.join(addon_temp_root, "binarized")
@@ -1972,17 +1989,22 @@ def build_all(settings, log, progress_callback):
         output_work_dir = create_output_work_dir(output_pbo, folder_name)
         jobs.append({"folder_name": folder_name, "folder_path": folder_path, "output_pbo": output_pbo, "temp_output_pbo": os.path.join(output_work_dir, os.path.basename(output_pbo)), "output_work_dir": output_work_dir, "prefix": prefix, "pack_source": pack_source, "folder_has_p3d": folder_has_p3d, "folder_has_binarizable_p3d": folder_has_binarizable_p3d, "folder_has_wrp": folder_has_wrp, "folder_needs_binarize": folder_needs_binarize, "staging_dir": staging_dir, "binarized_dir": binarized_dir, "binarize_source": staging_dir if folder_needs_binarize and staging_dir else folder_path, "state_hash": state_hash})
 
+    check_cancelled(jobs)
     for build_index, job in enumerate(jobs, start=1):
+        check_cancelled(jobs[build_index - 1:])
         progress_callback(build_index - 1, len(jobs))
         log("")
         log("=" * 80)
         log(f"Packing addon {build_index}/{len(jobs)}: {job['folder_name']}")
         log("=" * 80)
         try:
+            check_cancelled()
             if update_paa_from_sources:
                 summary["paa_updates"] += update_staging_paa_from_source_textures(job["folder_path"], job["pack_source"], imagetopaa_exe, log, exclude_pattern_list)
+                check_cancelled()
             if job["staging_dir"] and (job["folder_needs_binarize"] or convert_config):
                 ensure_config_include_files_in_staging(job["folder_path"], job["pack_source"], project_root, log, exclude_pattern_list)
+                check_cancelled()
             if use_binarize and job["folder_needs_binarize"]:
                 binarize_source = job["binarize_source"]
                 wrp_binarize_context = None
@@ -1993,28 +2015,36 @@ def build_all(settings, log, progress_callback):
                 try:
                     log("Running Binarize against project-aware source folder..." if job["folder_has_wrp"] else "Running Binarize against filtered staging folder...")
                     run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders)
+                    check_cancelled()
                     if job["folder_has_wrp"]:
                         validate_binarized_wrp_outputs(job["staging_dir"], job["binarized_dir"], log, exclude_pattern_list)
                 finally:
                     cleanup_wrp_binarize_source(wrp_binarize_context, log)
                 log("Overlaying binarized files onto staging folder...")
                 overlay_tree(job["binarized_dir"], job["staging_dir"], None, log)
+                check_cancelled()
                 if job["folder_has_p3d"]:
                     fallback_count = ensure_p3d_files_in_staging(job["folder_path"], job["staging_dir"], log, exclude_pattern_list)
                     summary["p3d_fallbacks"] += fallback_count
             if convert_config:
                 ensure_config_cpp_files_in_staging(job["folder_path"], job["pack_source"], log, exclude_pattern_list)
                 run_cfgconvert_to_bin(job["pack_source"], cfgconvert_exe, log, exclude_pattern_list)
+                check_cancelled()
             verify_pack_source_before_packing(job["folder_path"], job["pack_source"], convert_config, log, exclude_pattern_list)
+            check_cancelled()
             log(f"PBO Name:   {os.path.basename(job['output_pbo'])}")
             log(f"PBO prefix: {job['prefix']}")
             pack_pbo(job["pack_source"], job["temp_output_pbo"], job["prefix"], log, exclude_pattern_list)
+            check_cancelled()
             verify_packed_pbo(job["temp_output_pbo"], job["prefix"], log)
             verify_packed_wrp_entries(job["temp_output_pbo"], job["pack_source"], job["folder_path"], job["prefix"], project_root, exclude_pattern_list, log)
+            check_cancelled()
             if sign_pbos:
                 wait_for_file_ready(job["temp_output_pbo"], log)
                 run_dssignfile(dssignfile_exe, private_key, job["temp_output_pbo"], log)
                 summary["signed"] += 1
+                check_cancelled()
+            check_cancelled()
             replace_output_artifacts(job["temp_output_pbo"], job["output_pbo"], sign_pbos, log)
             verify_published_output(job["output_pbo"], sign_pbos, log)
             cleanup_output_work_dir(job["output_work_dir"], log)
@@ -2024,6 +2054,11 @@ def build_all(settings, log, progress_callback):
                     summary["keys_copied"] += 1
             source_cache[job["folder_name"]] = {"hash": job["state_hash"], "pbo": job["output_pbo"], "updated": datetime.now().isoformat(timespec="seconds")}
             save_build_cache(cache)
+        except BuildCancelled:
+            for pending_job in jobs[build_index - 1:]:
+                cleanup_output_work_dir(pending_job.get("output_work_dir", ""), log)
+            log("WARNING: Build stopped by user at a safe point.")
+            raise
         except Exception as error:
             summary["failed"] += 1
             cleanup_output_work_dir(job.get("output_work_dir", ""), log)

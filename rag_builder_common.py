@@ -8,6 +8,10 @@ class BuildError(Exception):
     pass
 
 
+class BuildCancelled(BuildError):
+    pass
+
+
 EXCLUDE_DIRS = {".git", ".svn", ".vscode", ".idea", "__pycache__"}
 EXCLUDE_FILES = {".gitignore", ".gitattributes", "thumbs.db", "desktop.ini", ".ds_store", "$prefix$", "$pboprefix$", "$prefix$.txt", "$pboprefix$.txt"}
 EXCLUDE_EXTENSIONS = {".delete"}

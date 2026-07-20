@@ -29,6 +29,10 @@ def get_cache_file_path():
     return get_app_data_dir() / "cache.json"
 
 
+def get_profiles_file_path():
+    return get_app_data_dir() / "profiles.json"
+
+
 def get_logs_dir():
     logs_dir = get_app_data_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -52,8 +56,16 @@ def load_json_file(path):
 
 def save_json_file(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4)
+    temp_path = path.with_name(path.name + ".tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=4)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def load_saved_settings():
@@ -62,6 +74,14 @@ def load_saved_settings():
 
 def save_saved_settings(data):
     save_json_file(get_settings_file_path(), data)
+
+
+def load_saved_profiles():
+    return load_json_file(get_profiles_file_path())
+
+
+def save_saved_profiles(data):
+    save_json_file(get_profiles_file_path(), data)
 
 
 def load_build_cache():
