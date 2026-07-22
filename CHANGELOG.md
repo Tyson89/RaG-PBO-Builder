@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.1 Beta
+
+- Added RaG Mod Relocator, a standalone PBO Tools GUI for previewing and safely rewriting mod path references across configs, scripts, materials, and other text source files.
+- Added automatic `$PBOPREFIX$` path detection, separator-aware replacement, ZIP backups, atomic writes, rollback, and binary-file warnings to Mod Relocator.
+- Added nested prefix discovery, source-backed path inference, size-preserving binary string relocation, and compressed PBO entry rewriting to Mod Relocator.
+- Reduced Mod Relocator scan time by ignoring textures, media, signatures, archives, executables, and other formats that cannot contain usable path references; added live scan progress and binary/PBO scan toggles.
+- Redesigned Mod Relocator path selection with asynchronous config/script/material detection, an editable candidate dropdown, Explorer-based destination selection, and a current-to-new path mapping preview.
+- Added optional copy mode that creates a new mod folder, copies the complete source tree, applies relocation only to the copy, and skips ZIP backup because the source remains untouched.
+- Increased Mod Relocator's default and minimum window sizes for a larger preview and added graphite tooltips to path controls, options, action buttons, mapping cards, progress, and results.
+- Changed Windows tool builds to self-contained application folders so bundled Tcl/Tk resources load reliably.
+
 ## 0.9.0 Beta
 
 - Filtered routine Binarize preload, terrain, UV, component, and LOD warning noise while preserving actionable warnings and errors.

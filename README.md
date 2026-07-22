@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.9.0 Beta
+**Version:** 0.9.1 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -55,6 +55,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - Compare two PBOs directly with added, changed, removed, and metadata status groups
 - View changed text/config files side by side with highlighted lines and previous/next change navigation
 - Search archive filenames and supported entry contents without extracting the PBO
+- Preview and rewrite mod path references with standalone `RaG_Mod_Relocator.exe`
 
 ---
 
@@ -177,6 +178,29 @@ The inspector can:
 - Search filenames and entry contents across the loaded archive
 
 Stored and BI LZSS-compressed `Cprs` PBO entries are extracted or previewed; unsupported entries are listed but not extracted. `.bin` to `.cpp` conversion, `.bin` preview, and rapified material text conversion require a valid `CfgConvert.exe` path, except `texHeaders.bin`, which is left as binary data. P3D inspection is a metadata scan, not debinarization, and does not recover `model.cfg`; use Mikero DeP3d/ExtractModelCfg for that. In-window drag/drop uses `tkinterdnd2`, which is bundled into the inspector EXE by the build script.
+
+## Mod Relocator
+
+`RaG_Mod_Relocator.exe` rewrites an old DayZ mod path to a new path across an unpacked mod or addon source folder.
+
+- Detects the main virtual path asynchronously from nested `$PBOPREFIX$` files and real config, script, and material references; alternate candidates remain selectable
+- Selects a new destination folder through Explorer and converts it to its drive-relative virtual mod path
+- Shows the current-to-new virtual path mapping before scanning
+- Optionally creates a new destination folder, copies the complete source tree, and applies relocation only to that copy
+- Skips ZIP backup in copy mode because the original source folder remains untouched
+- Previews every text source file, match count, and affected line before writing
+- Handles both backslash and forward-slash path references without changing each file's separator style
+- Covers configs, Enforce Script files, materials, JSON, XML, and other detected text source files
+- Creates a ZIP backup by default
+- Uses atomic writes and rolls back completed writes if an update fails
+- Rewrites size-preserving null-terminated ASCII and UTF-16 path strings in binarized files
+- Opens supported PBO archives, decompresses `Cprs` entries for scanning, rewrites safe contents, and rebuilds changed archives
+- Preserves unsafe or length-growing binary matches unchanged and lists them in the preview
+- Requires ZIP backups for binary or PBO changes; modified PBOs must be re-signed
+- Ignores textures, media, signatures, executables, and unrelated archives during deep scans
+- Shows live scan progress and allows binarized-file or slower PBO scanning to be disabled
+- Uses a larger resizable preview and tooltips explaining path controls, scan options, actions, and result states
+- Rewrites references only; it does not move or rename source files
 
 Install Python dependencies before building from source:
 
@@ -676,7 +700,7 @@ To build the builder executable, run this from the repository root:
 The generated builder executable is written to:
 
 ```txt
-dist\RaG_PBO_Builder.exe
+dist\RaG_PBO_Builder\RaG_PBO_Builder.exe
 ```
 
 To build the standalone inspector/extractor:
@@ -688,7 +712,19 @@ To build the standalone inspector/extractor:
 The generated inspector executable is written to:
 
 ```txt
-dist\RaG_PBO_Inspector.exe
+dist\RaG_PBO_Inspector\RaG_PBO_Inspector.exe
+```
+
+To build the standalone Mod Relocator:
+
+```powershell
+.\build_rag_mod_relocator.ps1
+```
+
+The generated executable is written to:
+
+```txt
+dist\RaG_Mod_Relocator\RaG_Mod_Relocator.exe
 ```
 
 To make a public download package for GitHub Releases:
