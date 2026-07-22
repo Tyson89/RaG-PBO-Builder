@@ -1599,8 +1599,44 @@ def parse_tool_output_summary(tool_name, lines):
     return summary
 
 
+def filter_binarize_output_lines(lines, has_terrain=False):
+    def is_noise(line):
+        lower = line.lower().strip()
+        if re.match(r"^(errors|warnings):\s*0$", lower):
+            return True
+        if "missing in preloadconfig" in lower:
+            return True
+        if "cannot optimize entry find for restorable classes" in lower:
+            return True
+        if not has_terrain and "terrain grid" in lower and "will be too slow" in lower:
+            return True
+        if "special lod contains 2nd uv set" in lower:
+            return True
+        if "2nd uv set needed" in lower and "not defined" in lower:
+            return True
+        if "no components in" in lower:
+            return True
+        if "lods not ordered by face count" in lower:
+            return True
+        return False
+
+    filtered = []
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        if is_noise(line):
+            continue
+        if lower.strip().startswith("warnings in "):
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+            if not next_line or is_noise(next_line) or next_line.lower().strip().startswith("warnings in "):
+                continue
+        filtered.append(line)
+    return filtered
+
+
 def log_tool_output_summary(tool_name, lines, log):
     summary = parse_tool_output_summary(tool_name, lines)
+    if not any(summary.values()):
+        return summary
     log("")
     log(f"{tool_name} output summary:")
     log(f"  Errors / critical lines: {summary['errors']}")
@@ -1613,7 +1649,7 @@ def log_tool_output_summary(tool_name, lines, log):
 
 
 
-def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name="", addon_folders=None):
+def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_root, temp_dir, max_processes, exclude_file, log, addon_name="", addon_folders=None, has_terrain=False):
     if os.path.exists(binarized_output_dir):
         shutil.rmtree(binarized_output_dir)
     os.makedirs(binarized_output_dir, exist_ok=True)
@@ -1645,11 +1681,12 @@ def run_dayz_binarize(source_dir, binarized_output_dir, binarize_exe, project_ro
     log(f"  Texture temp: {texture_temp_dir}")
     log("")
     result = run_hidden_text_subprocess(cmd, cwd=working_dir if os.path.isdir(working_dir) else None)
-    output_lines = result.stdout.splitlines() if result.stdout else []
+    raw_output_lines = result.stdout.splitlines() if result.stdout else []
+    output_lines = filter_binarize_output_lines(raw_output_lines, has_terrain)
     if output_lines:
         for line in output_lines:
             log(line)
-    else:
+    elif not raw_output_lines:
         log("Binarize returned no output.")
     log_tool_output_summary("Binarize", output_lines, log)
     if result.returncode != 0:
@@ -2014,7 +2051,7 @@ def build_all(settings, log, progress_callback, cancel_callback=None):
 
                 try:
                     log("Running Binarize against project-aware source folder..." if job["folder_has_wrp"] else "Running Binarize against filtered staging folder...")
-                    run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders)
+                    run_dayz_binarize(binarize_source, job["binarized_dir"], binarize_exe, project_root, temp_root, max_processes, exclude_file, log, job["folder_name"], binarize_addon_folders, job["folder_has_wrp"])
                     check_cancelled()
                     if job["folder_has_wrp"]:
                         validate_binarized_wrp_outputs(job["staging_dir"], job["binarized_dir"], log, exclude_pattern_list)
