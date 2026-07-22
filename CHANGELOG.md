@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0 Beta
+
+- Filtered routine Binarize preload, terrain, UV, component, and LOD warning noise while preserving actionable warnings and errors.
+
 ## 0.8.9 Beta
 
 - Added named build profiles containing build settings, path presets, addon selections, and preflight options, with import and export support.
