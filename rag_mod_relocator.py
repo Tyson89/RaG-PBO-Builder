@@ -260,15 +260,15 @@ class RaGModRelocatorApp(tk.Tk):
         add_tooltip(self.backup_check, "Back up every changed source file before in-place relocation. Disabled in copy mode.")
         scan_options = ttk.Frame(paths, style="Card.TFrame")
         scan_options.grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 2))
-        binary_check = ttk.Checkbutton(scan_options, text="Scan binarized files", variable=self.include_binary_var, command=self.invalidate_scan)
+        binary_check = ttk.Checkbutton(scan_options, text="Scan binarized files (same-length paths only)", variable=self.include_binary_var, command=self.invalidate_scan)
         binary_check.pack(side="left")
         pbo_check = ttk.Checkbutton(scan_options, text="Scan PBO archives (slower)", variable=self.include_pbo_var, command=self.invalidate_scan)
         pbo_check.pack(side="left", padx=(12, 0))
-        add_tooltip(binary_check, "Scan P3D, WRP, BIN, RTM, and similar files for size-preserving null-terminated path strings.")
+        add_tooltip(binary_check, "Scan P3D, WRP, BIN, RTM, and similar files. Binary references are rewritten only when old and new paths have identical encoded length.")
         add_tooltip(pbo_check, "Open PBO archives and decompress supported Cprs entries. Slower; changed PBOs must be re-signed.")
         ttk.Label(
             paths,
-            text="Text, null-terminated binary path strings, and supported PBO entries are scanned. Binary rewrites stay size-preserving. Modified PBOs must be re-signed.",
+            text="Text, binary path strings, and supported PBO entries are scanned. Different-length binary paths stay unchanged to protect structured files such as MLOD P3Ds. Modified PBOs must be re-signed.",
             style="CardMuted.TLabel",
             wraplength=850,
         ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))

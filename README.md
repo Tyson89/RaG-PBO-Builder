@@ -1,6 +1,6 @@
 # RaG PBO Builder
 
-**Version:** 0.9.1 Beta
+**Version:** 0.9.2 Beta
 **Author:** RaG Tyson  
 **License:** Freeware - Proprietary / All Rights Reserved
 
@@ -56,6 +56,7 @@ The tool is focused on practical DayZ addon building, safe output handling, usef
 - View changed text/config files side by side with highlighted lines and previous/next change navigation
 - Search archive filenames and supported entry contents without extracting the PBO
 - Preview and rewrite mod path references with standalone `RaG_Mod_Relocator.exe`
+- Validate and update existing DayZ Workshop items with standalone `RaG_Workshop_Publisher.exe`
 
 ---
 
@@ -193,14 +194,49 @@ Stored and BI LZSS-compressed `Cprs` PBO entries are extracted or previewed; uns
 - Covers configs, Enforce Script files, materials, JSON, XML, and other detected text source files
 - Creates a ZIP backup by default
 - Uses atomic writes and rolls back completed writes if an update fails
-- Rewrites size-preserving null-terminated ASCII and UTF-16 path strings in binarized files
-- Opens supported PBO archives, decompresses `Cprs` entries for scanning, rewrites safe contents, and rebuilds changed archives
-- Preserves unsafe or length-growing binary matches unchanged and lists them in the preview
+- Rewrites null-terminated ASCII and UTF-16 path strings in binarized files only when old and new paths have identical encoded length
+- Opens supported PBO archives, decompresses `Cprs` entries for scanning, rewrites safe text or same-length binary contents, and rebuilds changed archives
+- Preserves different-length binary matches unchanged and lists them in the preview, protecting variable-length MLOD P3D structures from NUL-padding corruption
 - Requires ZIP backups for binary or PBO changes; modified PBOs must be re-signed
 - Ignores textures, media, signatures, executables, and unrelated archives during deep scans
 - Shows live scan progress and allows binarized-file or slower PBO scanning to be disabled
 - Uses a larger resizable preview and tooltips explaining path controls, scan options, actions, and result states
 - Rewrites references only; it does not move or rename source files
+
+## Workshop Publisher
+
+`RaG_Workshop_Publisher.exe` updates existing DayZ Workshop mods through Steamworks `ISteamUGC` using the account signed into the desktop Steam client.
+
+- Accepts an existing Workshop URL or numeric Published File ID
+- Supports contributor-accessible items even when they do not appear under the signed-in user's published items
+- Shows desktop Steam status, signed-in persona, SteamID64, and DayZ App ID context
+- Queries item details through Steam before publishing and permits non-owner contributor attempts
+- Saves reusable non-sensitive publishing profiles
+- Validates root `Addons`, PBOs, BISIGN signatures, public BIKEY files, and optional `mod.cpp`
+- Builds an exact upload manifest before publishing
+- Excludes private BI signing keys, source-control folders, editor settings, caches, logs, backups, temporary files, and linked paths
+- Copies approved files into a temporary staging folder so source files remain untouched
+- Rechecks folder contents immediately before uploading and stops when the reviewed manifest changed
+- Preserves existing Workshop title, description, tags, visibility, and preview during content-only updates
+- Allows explicit opt-in changes to title, description, tags, visibility, and preview
+- Shows real Steam upload stages, processed bytes, total bytes, percentage, and final `EResult`
+- Uses newline-delimited JSON to communicate with the bundled native C++17 Steamworks bridge
+- Never requests or stores Steam usernames, passwords, Steam Guard codes, tokens, or cookies
+- Never installs, launches, or requires SteamCMD and never generates Workshop VDF files
+- Keeps readable Steamworks upload logs under local application data
+- Opens the Workshop page after successful publishing when enabled
+
+Publisher cannot grant Workshop access or bypass Steam permissions. Signed-in Steam account must already be item author or authorized contributor. Publisher updates existing items only; it does not create new Workshop items.
+
+Runtime requirements:
+
+- Desktop Steam client running normally
+- DayZ owned by signed-in account
+- DayZ Tools installed through Steam
+
+Publisher reuses the official DayZ Tools Publisher App ID context in place. It never copies or redistributes DayZ Tools' `steam_appid.txt`.
+
+Source builds additionally require Visual Studio 2022 Desktop development with C++, CMake tools, Steamworks SDK, and `STEAMWORKS_SDK_DIR` pointing to the SDK root.
 
 Install Python dependencies before building from source:
 
@@ -725,6 +761,18 @@ The generated executable is written to:
 
 ```txt
 dist\RaG_Mod_Relocator\RaG_Mod_Relocator.exe
+```
+
+To build the standalone Workshop Publisher:
+
+```powershell
+.\build_rag_workshop_publisher.ps1
+```
+
+The generated executable is written to:
+
+```txt
+dist\RaG_Workshop_Publisher\RaG_Workshop_Publisher.exe
 ```
 
 To make a public download package for GitHub Releases:

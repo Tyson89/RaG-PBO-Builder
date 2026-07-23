@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.2 Beta
+
+- Added RaG Workshop Publisher, a standalone PBO Tools GUI for updating existing DayZ Workshop mods as their author or an authorized contributor.
+- Added reusable publishing profiles, Workshop URL/ID parsing, optional preview selection, change notes, direct Workshop page access, and upload preflight.
+- Added exact manifest preview, private signing-key and development-file exclusions, and last-moment manifest revalidation.
+- Implemented publishing through a native C++17 Steamworks `ISteamUGC` bridge.
+- Added signed-in desktop Steam status, SteamID64 display, DayZ license/context checks, query-by-ID validation, contributor item support, real byte/stage progress, and exact Steam result reporting.
+- Proved contributor publishing end-to-end against a non-owned DayZ Workshop item with `SubmitItemUpdateResult_t = k_EResultOK`.
+- No Steam username, password, Steam Guard, SteamCMD, VDF generation, console parsing, or upload cancellation controls are used.
+- Added content-only metadata preservation plus opt-in title, description, tags, visibility, and preview changes.
+- Added NDJSON communication, safe DayZ Tools Publisher context discovery, native bridge packaging, mockable Python backend, and Publisher regression tests.
+- DayZ Tools is now required at runtime for its official installed DayZ App ID context; `steam_appid.txt` is never copied or redistributed.
+- Enlarged the Workshop Publisher window, added vertical scrolling, and collapsed unused metadata fields so all controls remain reachable without forced maximization.
+- Removed the preflight warning for optional missing `mod.cpp`.
+- Workshop Publisher now reads the same shared version as PBO Builder.
+- Added Workshop Publisher to standalone builds and RaG PBO Tools installer components.
+- Fixed Mod Relocator corruption of MLOD P3D files by allowing binary string rewrites only when replacement byte length is identical; different-length binary paths are now previewed and left unchanged.
+
 ## 0.9.1 Beta
 
 - Added RaG Mod Relocator, a standalone PBO Tools GUI for previewing and safely rewriting mod path references across configs, scripts, materials, and other text source files.

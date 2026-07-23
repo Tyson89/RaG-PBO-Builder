@@ -69,7 +69,7 @@ class FileChange:
 class BinaryCandidate:
     relative_path: str
     occurrences: int
-    reason: str = "Unsafe or length-growing binary string"
+    reason: str = "Different-length binary string; left unchanged"
 
 
 @dataclass(frozen=True)
@@ -206,9 +206,9 @@ def _replace_binary_strings(data, old_path, new_path):
         if not count:
             continue
         encoded = updated.encode("ascii", errors="strict")
-        if len(encoded) > len(raw_text):
+        if len(encoded) != len(raw_text):
             continue
-        updated_data[start:end - 1] = encoded + bytes(len(raw_text) - len(encoded))
+        updated_data[start:end - 1] = encoded
         replacements += count
 
     for byte_order in ("little", "big"):
@@ -232,8 +232,8 @@ def _replace_binary_strings(data, old_path, new_path):
                         encoding = "utf-16-le" if byte_order == "little" else "utf-16-be"
                         encoded = updated.encode(encoding)
                         original_length = len(chars) * 2
-                        if len(encoded) <= original_length:
-                            updated_data[start:start + original_length] = encoded + bytes(original_length - len(encoded))
+                        if len(encoded) == original_length:
+                            updated_data[start:start + original_length] = encoded
                             replacements += count
                     offset += 2
                 else:
@@ -396,7 +396,7 @@ def scan_references(root, old_path, new_path, include_binary=True, include_pbo=T
                         kind="PBO archive",
                     ))
                 if unsafe:
-                    binary_candidates.append(BinaryCandidate(relative_path, unsafe, "Unsafe PBO binary string"))
+                    binary_candidates.append(BinaryCandidate(relative_path, unsafe, "Different-length PBO binary string; left unchanged"))
                 continue
             if mode == "binary":
                 decoded = None
