@@ -101,6 +101,8 @@ class ApplyResult:
     replacements: int
     backup_path: Path | None
     destination_path: Path | None = None
+    copied_files: int = 0
+    copied_paa_files: int = 0
 
 
 def normalize_virtual_path(value):
@@ -242,6 +244,101 @@ def _replace_binary_strings(data, old_path, new_path):
     return bytes(updated_data), replacements, max(0, possible - replacements)
 
 
+def _read_mlod_u32(data, offset):
+    if offset + 4 > len(data):
+        raise RelocatorError("Truncated MLOD structure")
+    return struct.unpack_from("<I", data, offset)[0], offset + 4
+
+
+def _read_mlod_asciiz(data, offset):
+    end = data.find(b"\x00", offset)
+    if end < 0:
+        raise RelocatorError("Unterminated MLOD string")
+    return data[offset:end], end + 1
+
+
+def _rewrite_mlod_asciiz(raw, old_path, new_path, cache):
+    cached = cache.get(raw)
+    if cached is not None:
+        return cached
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        result = (raw + b"\x00", 0)
+    else:
+        updated, count, _lines = replace_path_references(text, old_path, new_path)
+        result = (updated.encode("ascii") + b"\x00", count)
+    cache[raw] = result
+    return result
+
+
+def _rewrite_mlod(data, old_path, new_path):
+    if len(data) < 12 or data[:4] != b"MLOD":
+        raise RelocatorError("Not an MLOD P3D")
+    lod_count = struct.unpack_from("<I", data, 8)[0]
+    offset = 12
+    output = bytearray(data[:12])
+    replacements = 0
+    string_cache = {}
+
+    for _lod_index in range(lod_count):
+        if offset + 28 > len(data) or data[offset:offset + 4] != b"P3DM":
+            raise RelocatorError("Unsupported MLOD LOD structure")
+        lod_start = offset
+        point_count, _ = _read_mlod_u32(data, offset + 12)
+        normal_count, _ = _read_mlod_u32(data, offset + 16)
+        face_count, _ = _read_mlod_u32(data, offset + 20)
+        fixed_end = offset + 28 + point_count * 16 + normal_count * 12
+        if fixed_end > len(data):
+            raise RelocatorError("Truncated MLOD point or normal table")
+        output.extend(data[lod_start:fixed_end])
+        offset = fixed_end
+
+        for _face_index in range(face_count):
+            face_fixed_end = offset + 72
+            if face_fixed_end > len(data):
+                raise RelocatorError("Truncated MLOD face")
+            output.extend(data[offset:face_fixed_end])
+            offset = face_fixed_end
+            for _field in range(2):
+                raw, offset = _read_mlod_asciiz(data, offset)
+                rewritten, count = _rewrite_mlod_asciiz(raw, old_path, new_path, string_cache)
+                output.extend(rewritten)
+                replacements += count
+
+        if offset + 4 > len(data) or data[offset:offset + 4] != b"TAGG":
+            raise RelocatorError("Missing MLOD TAGG section")
+        output.extend(b"TAGG")
+        offset += 4
+
+        while True:
+            if offset >= len(data):
+                raise RelocatorError("Truncated MLOD TAGG section")
+            output.append(data[offset])
+            offset += 1
+            raw_name, offset = _read_mlod_asciiz(data, offset)
+            rewritten_name, count = _rewrite_mlod_asciiz(raw_name, old_path, new_path, string_cache)
+            output.extend(rewritten_name)
+            replacements += count
+            tag_size, next_offset = _read_mlod_u32(data, offset)
+            tag_end = next_offset + tag_size
+            if tag_end > len(data):
+                raise RelocatorError("Truncated MLOD tag data")
+            output.extend(data[offset:tag_end])
+            offset = tag_end
+            if raw_name.lower() == b"#endoffile#":
+                break
+
+        if offset + 4 > len(data):
+            raise RelocatorError("Missing MLOD resolution")
+        output.extend(data[offset:offset + 4])
+        offset += 4
+
+    if offset != len(data):
+        raise RelocatorError("Unexpected data after MLOD LODs")
+    return bytes(output), replacements
+
+
 def _encode_pbo_string(value):
     return str(value).encode("utf-8") + b"\x00"
 
@@ -365,7 +462,7 @@ def scan_references(root, old_path, new_path, include_binary=True, include_pbo=T
             if mode == "ignore":
                 files_ignored += 1
                 continue
-            size_limit = MAX_SCAN_PBO_BYTES if mode == "pbo" else MAX_SCAN_FILE_BYTES
+            size_limit = MAX_SCAN_PBO_BYTES if mode == "pbo" or path.suffix.casefold() == ".p3d" else MAX_SCAN_FILE_BYTES
             if size > size_limit:
                 files_too_large += 1
                 continue
@@ -397,6 +494,30 @@ def scan_references(root, old_path, new_path, include_binary=True, include_pbo=T
                     ))
                 if unsafe:
                     binary_candidates.append(BinaryCandidate(relative_path, unsafe, "Different-length PBO binary string; left unchanged"))
+                continue
+            if mode == "binary" and path.suffix.casefold() == ".p3d" and data.startswith(b"MLOD"):
+                try:
+                    updated_data, occurrences = _rewrite_mlod(data, old_path, new_path)
+                except RelocatorError:
+                    binary_files_skipped += 1
+                    occurrences = _count_binary_candidates(data, old_path)
+                    if occurrences:
+                        binary_candidates.append(BinaryCandidate(
+                            relative_path,
+                            occurrences,
+                            "Unsupported MLOD layout; left unchanged",
+                        ))
+                    continue
+                if occurrences:
+                    changes.append(FileChange(
+                        path=path,
+                        relative_path=relative_path,
+                        occurrences=occurrences,
+                        line_numbers=(),
+                        original_data=data,
+                        updated_data=updated_data,
+                        kind="MLOD P3D",
+                    ))
                 continue
             if mode == "binary":
                 decoded = None
@@ -537,6 +658,33 @@ def apply_scan(scan, create_backup=True):
     return ApplyResult(scan.changed_files, scan.replacements, backup_path)
 
 
+def _build_copy_manifest(root):
+    manifest = {}
+    for current_root, directories, filenames in os.walk(root, followlinks=False):
+        for directory in directories:
+            path = Path(current_root, directory)
+            if path.is_symlink():
+                manifest[str(path.relative_to(root))] = (True, 0)
+        for filename in filenames:
+            path = Path(current_root, filename)
+            is_symlink = path.is_symlink()
+            size = 0 if is_symlink else path.stat().st_size
+            manifest[str(path.relative_to(root))] = (is_symlink, size)
+    return manifest
+
+
+def _verify_copied_manifest(staging, manifest):
+    for relative_path, (is_symlink, size) in manifest.items():
+        copied = staging.joinpath(*Path(relative_path).parts)
+        if is_symlink:
+            if not copied.is_symlink():
+                raise RelocatorError(f"Copied link is missing: {relative_path}")
+        elif not copied.is_file():
+            raise RelocatorError(f"Copied file is missing: {relative_path}")
+        elif copied.stat().st_size != size:
+            raise RelocatorError(f"Copied file size differs: {relative_path}")
+
+
 def copy_and_apply_scan(scan, destination, progress=None):
     source = scan.root.resolve()
     destination = Path(destination).expanduser().resolve(strict=False)
@@ -568,21 +716,42 @@ def copy_and_apply_scan(scan, destination, progress=None):
     destination_removed = False
     try:
         if progress:
-            progress(f"Copying source to temporary folder: {destination.name}")
-        shutil.copytree(source, staging, copy_function=shutil.copy2, symlinks=True)
-        relocated_changes = tuple(
-            replace(change, path=staging.joinpath(*Path(change.relative_path).parts))
-            for change in scan.changes
+            progress("Building complete source file list")
+        manifest = _build_copy_manifest(source)
+        copied_paa_files = sum(
+            1
+            for relative_path, (is_symlink, _size) in manifest.items()
+            if not is_symlink and Path(relative_path).suffix.casefold() == ".paa"
         )
-        relocated_scan = replace(scan, root=staging, changes=relocated_changes)
         if progress:
-            progress(f"Applying {scan.replacements} replacement(s) to copied files")
-        result = apply_scan(relocated_scan, create_backup=False)
+            progress(f"Copying all {len(manifest)} file(s) to temporary folder: {destination.name}")
+        shutil.copytree(source, staging, copy_function=shutil.copy2, symlinks=True)
+        if progress:
+            progress("Verifying complete copied file list")
+        _verify_copied_manifest(staging, manifest)
+        if scan.changes:
+            relocated_changes = tuple(
+                replace(change, path=staging.joinpath(*Path(change.relative_path).parts))
+                for change in scan.changes
+            )
+            relocated_scan = replace(scan, root=staging, changes=relocated_changes)
+            if progress:
+                progress(f"Applying {scan.replacements} replacement(s) to copied files")
+            result = apply_scan(relocated_scan, create_backup=False)
+        else:
+            result = ApplyResult(0, 0, None)
         if destination_was_empty:
             destination.rmdir()
             destination_removed = True
         os.replace(staging, destination)
-        return ApplyResult(result.changed_files, result.replacements, None, destination)
+        return ApplyResult(
+            result.changed_files,
+            result.replacements,
+            None,
+            destination,
+            len(manifest),
+            copied_paa_files,
+        )
     except Exception as error:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)

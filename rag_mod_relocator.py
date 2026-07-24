@@ -260,15 +260,15 @@ class RaGModRelocatorApp(tk.Tk):
         add_tooltip(self.backup_check, "Back up every changed source file before in-place relocation. Disabled in copy mode.")
         scan_options = ttk.Frame(paths, style="Card.TFrame")
         scan_options.grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 2))
-        binary_check = ttk.Checkbutton(scan_options, text="Scan binarized files (same-length paths only)", variable=self.include_binary_var, command=self.invalidate_scan)
+        binary_check = ttk.Checkbutton(scan_options, text="Scan binarized files", variable=self.include_binary_var, command=self.invalidate_scan)
         binary_check.pack(side="left")
         pbo_check = ttk.Checkbutton(scan_options, text="Scan PBO archives (slower)", variable=self.include_pbo_var, command=self.invalidate_scan)
         pbo_check.pack(side="left", padx=(12, 0))
-        add_tooltip(binary_check, "Scan P3D, WRP, BIN, RTM, and similar files. Binary references are rewritten only when old and new paths have identical encoded length.")
+        add_tooltip(binary_check, "Rewrite variable-length paths in editable MLOD P3Ds. Unknown compiled formats remain limited to same-length replacements.")
         add_tooltip(pbo_check, "Open PBO archives and decompress supported Cprs entries. Slower; changed PBOs must be re-signed.")
         ttk.Label(
             paths,
-            text="Text, binary path strings, and supported PBO entries are scanned. Different-length binary paths stay unchanged to protect structured files such as MLOD P3Ds. Modified PBOs must be re-signed.",
+            text="Text files, editable MLOD P3Ds, binary path strings, and supported PBO entries are scanned. MLOD paths may change length; unknown compiled formats remain size-preserving. Modified PBOs must be re-signed.",
             style="CardMuted.TLabel",
             wraplength=850,
         ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
@@ -426,7 +426,8 @@ class RaGModRelocatorApp(tk.Tk):
     def set_busy(self, busy):
         self.worker_running = busy
         self.scan_button.configure(state="disabled" if busy else "normal")
-        self.apply_button.configure(state="disabled" if busy or not self.scan_result or not self.scan_result.changes else "normal")
+        can_apply = self.scan_result and (self.scan_result.changes or self.copy_to_new_folder_var.get())
+        self.apply_button.configure(state="disabled" if busy or not can_apply else "normal")
         self.configure(cursor="wait" if busy else "")
         if busy:
             self.progress_bar.start(12)
@@ -457,7 +458,9 @@ class RaGModRelocatorApp(tk.Tk):
         self.after(100, self.poll_worker)
 
     def start_apply(self):
-        if self.worker_running or not self.scan_result or not self.scan_result.changes:
+        if self.worker_running or not self.scan_result:
+            return
+        if not self.scan_result.changes and not self.copy_to_new_folder_var.get():
             return
         result = self.scan_result
         copy_mode = bool(self.copy_to_new_folder_var.get())
@@ -549,14 +552,18 @@ class RaGModRelocatorApp(tk.Tk):
         self.last_backup_path = payload.backup_path
         self.backup_button.configure(state="normal" if self.last_backup_path else "disabled")
         if payload.destination_path:
-            self.summary_var.set(f"Copied complete folder; updated {payload.changed_files} files, {payload.replacements} replacements")
+            self.summary_var.set(f"Copied {payload.copied_files} files ({payload.copied_paa_files} PAA); updated {payload.changed_files}, {payload.replacements} replacements")
         else:
             self.summary_var.set(f"Applied: {payload.changed_files} files, {payload.replacements} replacements")
         backup_text = f" Backup: {payload.backup_path}" if payload.backup_path else ""
         destination_text = f" Destination: {payload.destination_path}" if payload.destination_path else ""
         self.status_var.set(f"Relocation complete.{destination_text}{backup_text}")
         if payload.destination_path:
-            message = f"Copied complete source folder.\nUpdated {payload.changed_files} file(s).\nReplaced {payload.replacements} path reference(s).{destination_text}"
+            message = (
+                f"Copied and verified {payload.copied_files} file(s), including {payload.copied_paa_files} PAA file(s).\n"
+                f"Updated {payload.changed_files} file(s).\n"
+                f"Replaced {payload.replacements} path reference(s).{destination_text}"
+            )
         else:
             message = f"Updated {payload.changed_files} file(s).\nReplaced {payload.replacements} path reference(s).{backup_text}"
         messagebox.showinfo(APP_TITLE, message, parent=self)
@@ -586,7 +593,7 @@ class RaGModRelocatorApp(tk.Tk):
             self.tree.insert("", "end", text=change.relative_path, values=(change.occurrences, lines or "—", change.kind), tags=("change",))
         for candidate in result.binary_candidates:
             self.tree.insert("", "end", text=candidate.relative_path, values=(candidate.occurrences, "—", candidate.reason), tags=("binary",))
-        self.apply_button.configure(state="normal" if result.changes else "disabled")
+        self.apply_button.configure(state="normal" if result.changes or self.copy_to_new_folder_var.get() else "disabled")
         binary_changes = sum(change.kind != "Text" for change in result.changes)
         binary = f", {binary_changes} compiled/PBO" if binary_changes else ""
         self.summary_var.set(f"{result.changed_files} files, {result.replacements} replacements{binary}")

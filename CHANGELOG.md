@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.3 Beta
+
+- Added format-aware variable-length path rewriting for editable MLOD P3D files.
+- Copy mode now copies and verifies every source file, including PAA textures, and reports copied file totals.
+- Copy mode now works even when no path replacements are found.
+- Reduced MLOD scan time through cached repeated-string processing.
+
 ## 0.9.2 Beta
 
 - Added RaG Workshop Publisher, a standalone PBO Tools GUI for updating existing DayZ Workshop mods as their author or an authorized contributor.
